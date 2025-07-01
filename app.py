@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 from binance import Client
 import os
+import time
 import logging
 from datetime import datetime
 from tenacity import retry, stop_after_attempt, wait_fixed
@@ -41,8 +42,25 @@ api_secret = os.getenv("BINANCE_API_SECRET")
 if not api_key or not api_secret:
     raise ValueError("BINANCE_API_KEY y BINANCE_API_SECRET son requeridos")
 
+
+from binance.helpers import dateparser
+from binance import Client
+
+# Inicializar cliente de Binance
+api_key = os.getenv("BINANCE_API_KEY")
+api_secret = os.getenv("BINANCE_API_SECRET")
+
 client = Client(api_key, api_secret)
-client.adjust_time_offset()  # Ajusta el tiempo para evitar errores de firma
+
+# Ajustar tiempo manualmente
+try:
+    res = client.get_server_time()
+    server_time = res['serverTime']
+    local_time = int(time.time() * 1000)  # Tiempo actual en ms
+    client.time_offset = server_time - local_time
+    print(f"✅ Ajustado offset de tiempo: {client.time_offset} ms")
+except Exception as e:
+    print(f"❌ Error al ajustar tiempo: {e}")
 
 # Prueba básica de conexión
 try:

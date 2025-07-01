@@ -3,6 +3,7 @@ from binance import Client
 import os
 import logging
 from datetime import datetime
+from tenacity import retry, stop_after_attempt, wait_fixed
 
 # Configuración del logging
 logging.basicConfig(
@@ -11,6 +12,16 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
+# Inicializar Flask
+app = Flask(__name__)
+
+# === CONFIGURACIÓN DEL BOT ===
+PARES_PERMITIDOS = ["FETUSDT", "GRTUSDT", "AIUSDT", "SONICUSDT", "DOTUSDT", "BAKEUSDT"]
+LEVERAGE = 20
+POSITION_PERCENT = 0.05  # 5% del balance disponible
+MODE_ONEWAY = True
+
+# === FUNCIONES AUXILIARES ===
 def log_signal(data, status, error=None):
     """Guarda en logs cada señal recibida y su estado"""
     symbol = data.get("symbol", "unknown").upper()
@@ -23,22 +34,25 @@ def log_signal(data, status, error=None):
     logging.info(msg)
     print(msg)  # Mostrar también en consola
 
-
-# Inicializar cliente de Binance
+# === INICIALIZAR CLIENTE DE BINANCE ===
 api_key = os.getenv("BINANCE_API_KEY")
 api_secret = os.getenv("BINANCE_API_SECRET")
 
+if not api_key or not api_secret:
+    raise ValueError("BINANCE_API_KEY y BINANCE_API_SECRET son requeridos")
+
 client = Client(api_key, api_secret)
+client.adjust_time_offset()  # Ajusta el tiempo para evitar errores de firma
 
-# === CONFIGURACIÓN DEL BOT ===
-PARES_PERMITIDOS = ["FETUSDT", "GRTUSDT", "AIUSDT", "SONICUSDT", "DOTUSDT", "BAKEUSDT"]
-LEVERAGE = 20
-POSITION_PERCENT = 0.05  # 5% del balance disponible
-MODE_ONEWAY = True
+# Prueba básica de conexión
+try:
+    client.futures_account_balance()
+    print("✅ Conexión a Binance Futures OK")
+except Exception as e:
+    print("❌ Error conectando a Binance:", e)
 
-# === FUNCIONES AUXILIARES ===
+# === FUNCIONES COMPLEMENTARIAS ===
 def get_balance_usdt():
-    """Obtiene el balance disponible en USDT"""
     try:
         balances = client.futures_account_balance()
         for b in balances:
@@ -50,20 +64,18 @@ def get_balance_usdt():
         return 0.0
 
 def get_quantity(symbol):
-    """Calcula cantidad en base al 5% del balance"""
     balance = get_balance_usdt()
     investment = balance * POSITION_PERCENT
     try:
         ticker = client.futures_symbol_ticker(symbol=symbol)
         price = float(ticker['price'])
-        qty = round(investment / price, 8)  # Ajuste a 8 decimales
+        qty = round(investment / price, 8)
         return qty
     except Exception as e:
         print("Error obteniendo precio:", e)
         return 0.0
 
 def close_position(symbol):
-    """Cierra cualquier posición abierta"""
     try:
         position = client.futures_position_information(symbol=symbol)
         qty = float(position[0]['positionAmt'])
@@ -79,19 +91,32 @@ def close_position(symbol):
     except Exception as e:
         print(f"Error cerrando posición en {symbol}:", e)
 
-# === SERVIDOR FLASK ===
-app = Flask(__name__)
+# === MANEJO SEGURO DE ÓRDENES ===
+executed_signals = set()
+
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
+def safe_futures_create_order(**kwargs):
+    return client.futures_create_order(**kwargs)
+
+# === RUTAS FLASK ===
+@app.route('/')
+def home():
+    return jsonify({"status": "alive"})
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
     data = request.json
     print("Se recibió señal:", data)
 
-    symbol = data.get("symbol", "").upper()
-    signal = data.get("signal", "").upper()
+    signal_id = data.get('signalId')
+    if signal_id in executed_signals:
+        log_signal(data, "Duplicado", "Señal ya procesada")
+        return jsonify({"status": "duplicate"}), 200
 
-    # Limpiar el símbolo (ej: SONICUSDT.P → SONICUSDT)
-    symbol = symbol.replace(".P", "")
+    executed_signals.add(signal_id)
+
+    symbol = data.get("symbol", "").upper().replace(".P", "")
+    signal = data.get("signal", "").upper()
 
     if symbol not in PARES_PERMITIDOS:
         log_signal(data, "Rechazado (par no permitido)")
@@ -114,7 +139,7 @@ def webhook():
                 log_signal(data, "Cantidad inválida")
                 return jsonify({"status": "error", "message": "Cantidad inválida"}), 400
 
-            order = client.futures_create_order(
+            order = safe_futures_create_order(
                 symbol=symbol,
                 side="BUY",
                 type="MARKET",
@@ -128,7 +153,7 @@ def webhook():
                 log_signal(data, "Cantidad inválida")
                 return jsonify({"status": "error", "message": "Cantidad inválida"}), 400
 
-            order = client.futures_create_order(
+            order = safe_futures_create_order(
                 symbol=symbol,
                 side="SELL",
                 type="MARKET",
@@ -152,7 +177,6 @@ def webhook():
 
 @app.route('/stats', methods=['GET'])
 def stats():
-    """Muestra estadísticas básicas de uso"""
     try:
         with open('webhook_server.log', 'r') as f:
             logs = f.readlines()
@@ -163,5 +187,6 @@ def stats():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
+# === INICIO DEL SERVIDOR ===
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)

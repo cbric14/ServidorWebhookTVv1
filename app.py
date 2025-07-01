@@ -1,6 +1,9 @@
 from flask import Flask, request, jsonify
 from binance import Client
 import os
+import logging
+from datetime import datetime
+
 
 app = Flask(__name__)
 
@@ -15,6 +18,24 @@ api_key = os.getenv("BINANCE_API_KEY")
 api_secret = os.getenv("BINANCE_API_SECRET")
 client = Client(api_key, api_secret)
 
+# Configuración del logging
+logging.basicConfig(
+    filename='webhook_server.log',  # Archivo donde se guardarán los logs
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+def log_signal(data, status, error=None):
+    """Guarda cada señal recibida y su estado"""
+    symbol = data.get("symbol", "unknown").upper()
+    signal = data.get("signal", "unknown").upper()
+
+    msg = f"Señal recibida: {symbol} | Acción: {signal} | Estado: {status}"
+    if error:
+        msg += f" | Error: {error}"
+
+    logging.info(msg)
+    print(msg)  # También mostrar en consola
 # === FUNCIONES AUXILIARES ===
 
 def get_balance_usdt():
@@ -59,6 +80,7 @@ def close_position(symbol):
     except Exception as e:
         print(f"Error cerrando posición en {symbol}:", e)
 
+
 # === RUTA PRINCIPAL ===
 
 @app.route('/webhook', methods=['POST'])
@@ -73,8 +95,13 @@ def webhook():
     symbol = symbol.replace(".P", "")
 
     if symbol not in PARES_PERMITIDOS:
+        log_signal(data, "Rechazado (par no permitido)")
         print("Par no permitido:", symbol)
         return jsonify({"status": "error", "message": "Par no permitido"}), 400
+    
+    if signal not in ["BUY", "SELL", "EXIT BUY", "EXIT SELL"]:
+        log_signal(data, "Señal desconocida")
+        return jsonify({"status": "error", "message": "Señal desconocida"}), 400
 
     try:
         # Establecer leverage
@@ -94,6 +121,7 @@ def webhook():
                 type="MARKET",
                 quantity=qty
             )
+            log_signal(data, "Orden BUY enviada")
             print("Orden BUY enviada:", order)
 
         elif signal == "SELL":
@@ -107,12 +135,15 @@ def webhook():
                 type="MARKET",
                 quantity=qty
             )
+            log_signal(data, "Orden SELL enviada")
             print("Orden SELL enviada:", order)
 
         elif signal == "EXIT BUY":
+            log_signal(data, "Cerrada posición larga")
             close_position(symbol)
 
         elif signal == "EXIT SELL":
+            log_signal(data, "Cerrada posición corta")
             close_position(symbol)
 
         elif signal == "TAKE PROFIT":
@@ -122,6 +153,7 @@ def webhook():
         return jsonify({"status": "ok"}), 200
 
     except Exception as e:
+        log_signal(data, "Error al ejecutar orden", error=str(e)
         print("Error ejecutando orden:", e)
         return jsonify({"status": "error", "message": str(e)}), 500
 

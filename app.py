@@ -69,6 +69,9 @@ def webhook():
     symbol = data.get("symbol", "").upper()
     signal = data.get("signal", "").upper()
 
+    # Limpiar el símbolo (eliminar .P si viene)
+    symbol = symbol.replace(".P", "")
+
     if symbol not in PARES_PERMITIDOS:
         print("Par no permitido:", symbol)
         return jsonify({"status": "error", "message": "Par no permitido"}), 400

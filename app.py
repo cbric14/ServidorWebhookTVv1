@@ -4,29 +4,15 @@ import os
 import logging
 from datetime import datetime
 
-
-app = Flask(__name__)
-
-# === CONFIGURACIÓN ===
-PARES_PERMITIDOS = ["FETUSDT", "GRTUSDT", "AIUSDT", "SONICUSDT", "DOTUSDT", "BAKEUSDT"]
-LEVERAGE = 20
-POSITION_PERCENT = 0.05  # 5% del balance disponible
-MODE_ONEWAY = True
-
-# Inicializa cliente de Binance
-api_key = os.getenv("BINANCE_API_KEY")
-api_secret = os.getenv("BINANCE_API_SECRET")
-client = Client(api_key, api_secret)
-
 # Configuración del logging
 logging.basicConfig(
-    filename='webhook_server.log',  # Archivo donde se guardarán los logs
+    filename='webhook_server.log',
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
 def log_signal(data, status, error=None):
-    """Guarda cada señal recibida y su estado"""
+    """Guarda en logs cada señal recibida y su estado"""
     symbol = data.get("symbol", "unknown").upper()
     signal = data.get("signal", "unknown").upper()
 
@@ -35,9 +21,22 @@ def log_signal(data, status, error=None):
         msg += f" | Error: {error}"
 
     logging.info(msg)
-    print(msg)  # También mostrar en consola
-# === FUNCIONES AUXILIARES ===
+    print(msg)  # Mostrar también en consola
 
+
+# Inicializar cliente de Binance
+api_key = os.getenv("BINANCE_API_KEY")
+api_secret = os.getenv("BINANCE_API_SECRET")
+
+client = Client(api_key, api_secret)
+
+# === CONFIGURACIÓN DEL BOT ===
+PARES_PERMITIDOS = ["FETUSDT", "GRTUSDT", "AIUSDT", "SONICUSDT", "DOTUSDT", "BAKEUSDT"]
+LEVERAGE = 20
+POSITION_PERCENT = 0.05  # 5% del balance disponible
+MODE_ONEWAY = True
+
+# === FUNCIONES AUXILIARES ===
 def get_balance_usdt():
     """Obtiene el balance disponible en USDT"""
     try:
@@ -80,8 +79,8 @@ def close_position(symbol):
     except Exception as e:
         print(f"Error cerrando posición en {symbol}:", e)
 
-
-# === RUTA PRINCIPAL ===
+# === SERVIDOR FLASK ===
+app = Flask(__name__)
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -91,14 +90,13 @@ def webhook():
     symbol = data.get("symbol", "").upper()
     signal = data.get("signal", "").upper()
 
-    # Limpiar el símbolo (eliminar .P si viene)
+    # Limpiar el símbolo (ej: SONICUSDT.P → SONICUSDT)
     symbol = symbol.replace(".P", "")
 
     if symbol not in PARES_PERMITIDOS:
         log_signal(data, "Rechazado (par no permitido)")
-        print("Par no permitido:", symbol)
         return jsonify({"status": "error", "message": "Par no permitido"}), 400
-    
+
     if signal not in ["BUY", "SELL", "EXIT BUY", "EXIT SELL"]:
         log_signal(data, "Señal desconocida")
         return jsonify({"status": "error", "message": "Señal desconocida"}), 400
@@ -113,6 +111,7 @@ def webhook():
         if signal == "BUY":
             qty = get_quantity(symbol)
             if qty <= 0:
+                log_signal(data, "Cantidad inválida")
                 return jsonify({"status": "error", "message": "Cantidad inválida"}), 400
 
             order = client.futures_create_order(
@@ -122,11 +121,11 @@ def webhook():
                 quantity=qty
             )
             log_signal(data, "Orden BUY enviada")
-            print("Orden BUY enviada:", order)
 
         elif signal == "SELL":
             qty = get_quantity(symbol)
             if qty <= 0:
+                log_signal(data, "Cantidad inválida")
                 return jsonify({"status": "error", "message": "Cantidad inválida"}), 400
 
             order = client.futures_create_order(
@@ -136,28 +135,33 @@ def webhook():
                 quantity=qty
             )
             log_signal(data, "Orden SELL enviada")
-            print("Orden SELL enviada:", order)
 
         elif signal == "EXIT BUY":
-            log_signal(data, "Cerrada posición larga")
             close_position(symbol)
+            log_signal(data, "Cerrada posición corta")
 
         elif signal == "EXIT SELL":
-            log_signal(data, "Cerrada posición corta")
             close_position(symbol)
-
-        elif signal == "TAKE PROFIT":
-            # Aquí puedes implementar lógica personalizada si TradingView envía el precio objetivo
-            print("Señal TAKE PROFIT recibida")
+            log_signal(data, "Cerrada posición larga")
 
         return jsonify({"status": "ok"}), 200
 
     except Exception as e:
-        log_signal(data, "Error al ejecutar orden", error=str(e)
-        print("Error ejecutando orden:", e)
+        log_signal(data, "Error al ejecutar orden", error=str(e))
         return jsonify({"status": "error", "message": str(e)}), 500
 
-# === INICIO DEL SERVIDOR ===
+@app.route('/stats', methods=['GET'])
+def stats():
+    """Muestra estadísticas básicas de uso"""
+    try:
+        with open('webhook_server.log', 'r') as f:
+            logs = f.readlines()
+        return jsonify({
+            "total_signals": len(logs),
+            "last_10_logs": logs[-10:]
+        }), 200
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)

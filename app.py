@@ -44,11 +44,12 @@ except Exception as e:
     print(f"⚠️ No se pudo ajustar el tiempo: {e}")
 
 # === CONFIGURACIÓN DEL BOT ===
-# Lista de pares permitidos tal como vienen de TradingView
+# Lista de pares permitidos (sin .P)
 PARES_PERMITIDOS = ["FETUSDT", "GRTUSDT", "AIUSDT", "SONICUSDT", "DOTUSDT", "BAKEUSDT"]
 LEVERAGE = 20
-POSITION_PERCENT = 0.5  # 50% del balance disponible
+POSITION_PERCENT = 0.05  # 5% del balance disponible
 MODE_ONEWAY = True
+STOP_LOSS_PERCENT = 1.0  # 1% de Stop Loss
 
 # === FUNCIONES AUXILIARES ===
 def get_balance_usdt():
@@ -63,39 +64,73 @@ def get_balance_usdt():
         print("Error al obtener balance:", e)
         return 0.0
 
-def get_symbol_info(symbol):
-    """Obtiene información del par para validar stepSize"""
-    info = client.futures_exchange_info()
-    symbol_data = next((item for item in info['symbols'] if item['symbol'] == symbol), None)
-    if not symbol_data:
-        raise ValueError(f"No se encontró información para el par {symbol}")
-    return symbol_data
+def get_step_size_precision(symbol):
+    """Obtiene la precisión permitida por el par"""
+    try:
+        info = client.futures_exchange_info()
+        symbol_data = next((item for item in info['symbols'] if item['symbol'] == symbol), None)
+        if not symbol_data:
+            raise ValueError(f"{symbol} no encontrado en Binance Futures")
+
+        step_size_str = None
+        for f in symbol_data['filters']:
+            if 'stepSize' in f:
+                step_size_str = f['stepSize']
+                break
+
+        if not step_size_str:
+            raise ValueError(f"No se encontró stepSize para {symbol}")
+
+        step_size = float(step_size_str)
+        precision = int(round(-math.log(step_size, 10), 0))
+        return precision
+
+    except Exception as e:
+        print("⚠️ Error obteniendo stepSize:", e)
+        return 8  # Fallback a 8 decimales si hay error
 
 def get_quantity(symbol):
-    """Calcula cantidad según el 5% del balance y ajusta a la precisión del par"""
     investment = get_balance_usdt() * POSITION_PERCENT
     try:
         ticker = client.futures_symbol_ticker(symbol=symbol)
         price = float(ticker['price'])
         qty = investment / price
 
-        # Obtener información del par
-        symbol_info = get_symbol_info(symbol)
-
-        # Extraer stepSize
-        step_size_str = next(filter(lambda x: x['filterType'] == 'LOT_SIZE', symbol_info['filters']))['stepSize']
-        step_size = float(step_size_str)
-
-        # Calcular la cantidad de decimales permitidos
-        precision = int(round(-math.log(step_size, 10), 0))
+        precision = get_step_size_precision(symbol)
         final_qty = round(qty, precision)
 
-        print(f"✅ Cantidad calculada para {symbol}: {final_qty} (stepSize: {step_size})")
+        print(f"✅ Cantidad calculada para {symbol}: {final_qty}")
         return final_qty
 
     except Exception as e:
         print(f"❌ Error obteniendo cantidad para {symbol}: {e}")
         return 0.0
+
+def create_stop_loss_order(symbol, side, qty, entry_price):
+    """Crea una orden STOP_MARKET del 1%"""
+    try:
+        if side == "BUY":
+            stop_price = round(entry_price * (1 - STOP_LOSS_PERCENT / 100), 8)
+            order_side = "SELL"
+        elif side == "SELL":
+            stop_price = round(entry_price * (1 + STOP_LOSS_PERCENT / 100), 8)
+            order_side = "BUY"
+        else:
+            raise ValueError("Side debe ser BUY o SELL")
+
+        sl_order = client.futures_create_order(
+            symbol=symbol,
+            side=order_side,
+            type="STOP_MARKET",
+            quantity=abs(qty),
+            stopPrice=stop_price,
+            reduceOnly=True
+        )
+        print(f"📉 Stop Loss creado en {stop_price} para {symbol}")
+        return sl_order
+    except Exception as e:
+        print(f"⚠️ Error creando Stop Loss para {symbol}: {str(e)}")
+        return None
 
 def close_position(symbol):
     """Cierra cualquier posición abierta"""
@@ -108,10 +143,10 @@ def close_position(symbol):
 
         qty = float(position_info[0]['positionAmt'])
         if qty != 0:
-            side = "SELL" if qty > 0 else "BUY"
+            order_side = "SELL" if qty > 0 else "BUY"
             client.futures_create_order(
                 symbol=symbol,
-                side=side,
+                side=order_side,
                 type="MARKET",
                 quantity=abs(qty)
             )
@@ -131,13 +166,10 @@ def webhook():
     data = request.json
     print("Se recibió señal:", data)
 
-    symbol = data.get("symbol", "").upper()  # Recibe 'SONICUSDT.P'
+    symbol = data.get("symbol", "").upper().replace(".P", "")
     signal = data.get("signal", "").upper()
 
-    # === Limpiar .P del par ===
-    cleaned_symbol = symbol.replace(".P", "")  # Ahora es 'SONICUSDT'
-
-    if cleaned_symbol not in PARES_PERMITIDOS:
+    if symbol not in PARES_PERMITIDOS:
         log_signal(data, "Rechazado (par no permitido)")
         return jsonify({"status": "error", "message": "Par no permitido"}), 400
 
@@ -146,9 +178,6 @@ def webhook():
         return jsonify({"status": "error", "message": "Señal desconocida"}), 400
 
     try:
-        # === Usar el par limpio ===
-        symbol = cleaned_symbol
-
         # Establecer leverage
         client.futures_change_leverage(symbol=symbol, leverage=LEVERAGE)
 
@@ -156,17 +185,26 @@ def webhook():
             close_position(symbol)
 
         if signal == "BUY":
-            qty = get_quantity(symbol)  # Usa el par limpio
+            qty = get_quantity(symbol)
             if qty <= 0:
                 log_signal(data, "Cantidad inválida")
                 return jsonify({"status": "error", "message": "Cantidad inválida"}), 400
 
+            # Crear orden principal
             order = client.futures_create_order(
                 symbol=symbol,
                 side="BUY",
                 type="MARKET",
                 quantity=qty
             )
+
+            # Obtener precio actual para calcular SL
+            ticker = client.futures_symbol_ticker(symbol=symbol)
+            entry_price = float(ticker['price'])
+
+            # Crear Stop Loss
+            sl_order = create_stop_loss_order(symbol, "BUY", qty, entry_price)
+
             log_signal(data, "Orden BUY enviada")
 
         elif signal == "SELL":
@@ -175,13 +213,30 @@ def webhook():
                 log_signal(data, "Cantidad inválida")
                 return jsonify({"status": "error", "message": "Cantidad inválida"}), 400
 
+            # Crear orden principal
             order = client.futures_create_order(
                 symbol=symbol,
                 side="SELL",
                 type="MARKET",
                 quantity=qty
             )
+
+            # Obtener precio actual para calcular SL
+            ticker = client.futures_symbol_ticker(symbol=symbol)
+            entry_price = float(ticker['price'])
+
+            # Crear Stop Loss
+            sl_order = create_stop_loss_order(symbol, "SELL", qty, entry_price)
+
             log_signal(data, "Orden SELL enviada")
+
+        elif signal == "EXIT BUY":
+            close_position(symbol)
+            log_signal(data, "Cerrada posición corta")
+
+        elif signal == "EXIT SELL":
+            close_position(symbol)
+            log_signal(data, "Cerrada posición larga")
 
         return jsonify({"status": "ok"}), 200
 

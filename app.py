@@ -131,10 +131,13 @@ def webhook():
     data = request.json
     print("Se recibió señal:", data)
 
-    symbol = data.get("symbol", "").upper()
+    symbol = data.get("symbol", "").upper()  # Recibe 'SONICUSDT.P'
     signal = data.get("signal", "").upper()
 
-    if symbol not in PARES_PERMITIDOS:
+    # === Limpiar .P del par ===
+    cleaned_symbol = symbol.replace(".P", "")  # Ahora es 'SONICUSDT'
+
+    if cleaned_symbol not in PARES_PERMITIDOS:
         log_signal(data, "Rechazado (par no permitido)")
         return jsonify({"status": "error", "message": "Par no permitido"}), 400
 
@@ -143,6 +146,9 @@ def webhook():
         return jsonify({"status": "error", "message": "Señal desconocida"}), 400
 
     try:
+        # === Usar el par limpio ===
+        symbol = cleaned_symbol
+
         # Establecer leverage
         client.futures_change_leverage(symbol=symbol, leverage=LEVERAGE)
 
@@ -150,7 +156,7 @@ def webhook():
             close_position(symbol)
 
         if signal == "BUY":
-            qty = get_quantity(symbol)
+            qty = get_quantity(symbol)  # Usa el par limpio
             if qty <= 0:
                 log_signal(data, "Cantidad inválida")
                 return jsonify({"status": "error", "message": "Cantidad inválida"}), 400
@@ -176,14 +182,6 @@ def webhook():
                 quantity=qty
             )
             log_signal(data, "Orden SELL enviada")
-
-        elif signal == "EXIT BUY":
-            close_position(symbol)
-            log_signal(data, "Cerrada posición corta")
-
-        elif signal == "EXIT SELL":
-            close_position(symbol)
-            log_signal(data, "Cerrada posición larga")
 
         return jsonify({"status": "ok"}), 200
 

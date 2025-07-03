@@ -232,11 +232,11 @@ def webhook():
 
         elif signal == "EXIT BUY":
             close_position(symbol)
-            log_signal(data, "Cerrada posición corta")
+            log_signal(data, "Cerrada posición larga")
 
         elif signal == "EXIT SELL":
             close_position(symbol)
-            log_signal(data, "Cerrada posición larga")
+            log_signal(data, "Cerrada posición corta")
 
         return jsonify({"status": "ok"}), 200
 

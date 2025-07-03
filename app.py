@@ -2,10 +2,9 @@ from flask import Flask, request, jsonify
 from binance import Client
 import os
 import logging
-from datetime import datetime
 import time
 
-# === CONFIGURACIÓN DEL LOGGING ===
+# Configuración del logging
 logging.basicConfig(
     filename='webhook_server.log',
     level=logging.INFO,
@@ -24,7 +23,7 @@ def log_signal(data, status, error=None):
     logging.info(msg)
     print(msg)
 
-# === INICIALIZACIÓN DEL CLIENTE BINANCE ===
+# Inicializar cliente de Binance
 api_key = os.getenv("BINANCE_API_KEY")
 api_secret = os.getenv("BINANCE_API_SECRET")
 
@@ -33,7 +32,7 @@ if not api_key or not api_secret:
 
 client = Client(api_key, api_secret)
 
-# === AJUSTE AUTOMÁTICO DEL TIEMPO ===
+# === AJUSTE DE TIEMPO CON BINANCE ===
 try:
     res = client.get_server_time()
     server_time = res['serverTime']

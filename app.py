@@ -47,7 +47,7 @@ except Exception as e:
 # Lista de pares permitidos tal como vienen de TradingView
 PARES_PERMITIDOS = ["FETUSDT", "GRTUSDT", "AIUSDT", "SONICUSDT", "DOTUSDT", "BAKEUSDT"]
 LEVERAGE = 20
-POSITION_PERCENT = 0.05  # 5% del balance disponible
+POSITION_PERCENT = 0.5  # 50% del balance disponible
 MODE_ONEWAY = True
 
 # === FUNCIONES AUXILIARES ===

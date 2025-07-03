@@ -45,7 +45,7 @@ except Exception as e:
 
 # === CONFIGURACIÓN DEL BOT ===
 # Lista de pares permitidos tal como vienen de TradingView
-PARES_PERMITIDOS = ["FETUSDT.P", "GRTUSDT.P", "AIUSDT.P", "SONICUSDT.P", "DOTUSDT.P", "BAKEUSDT.P"]
+PARES_PERMITIDOS = ["FETUSDT", "GRTUSDT", "AIUSDT", "SONICUSDT", "DOTUSDT", "BAKEUSDT"]
 LEVERAGE = 20
 POSITION_PERCENT = 0.05  # 5% del balance disponible
 MODE_ONEWAY = True

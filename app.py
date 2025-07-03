@@ -2,8 +2,8 @@ from flask import Flask, request, jsonify
 from binance import Client
 import os
 import logging
-from datetime import datetime
 import time
+import math
 
 # Configuración del logging
 logging.basicConfig(
@@ -41,10 +41,11 @@ try:
     client.time_offset = server_time - local_time
     print(f"✅ Offset de tiempo ajustado: {client.time_offset} ms")
 except Exception as e:
-    print(f"⚠️ No se pudo ajustar el tiempo automáticamente: {e}")
+    print(f"⚠️ No se pudo ajustar el tiempo: {e}")
 
 # === CONFIGURACIÓN DEL BOT ===
-PARES_PERMITIDOS = ["FETUSDT", "GRTUSDT", "AIUSDT", "SONICUSDT", "DOTUSDT", "BAKEUSDT"]
+# Lista de pares permitidos tal como vienen de TradingView
+PARES_PERMITIDOS = ["FETUSDT.P", "GRTUSDT.P", "AIUSDT.P", "SONICUSDT.P", "DOTUSDT.P", "BAKEUSDT.P"]
 LEVERAGE = 20
 POSITION_PERCENT = 0.05  # 5% del balance disponible
 MODE_ONEWAY = True
@@ -62,22 +63,49 @@ def get_balance_usdt():
         print("Error al obtener balance:", e)
         return 0.0
 
+def get_symbol_info(symbol):
+    """Obtiene información del par para validar stepSize"""
+    info = client.futures_exchange_info()
+    symbol_data = next((item for item in info['symbols'] if item['symbol'] == symbol), None)
+    if not symbol_data:
+        raise ValueError(f"No se encontró información para el par {symbol}")
+    return symbol_data
+
 def get_quantity(symbol):
-    """Calcula cantidad en base al 5% del balance"""
+    """Calcula cantidad según el 5% del balance y ajusta a la precisión del par"""
     investment = get_balance_usdt() * POSITION_PERCENT
     try:
         ticker = client.futures_symbol_ticker(symbol=symbol)
         price = float(ticker['price'])
-        qty = round(investment / price, 8)  # Ajuste a 8 decimales
-        return qty
+        qty = investment / price
+
+        # Obtener información del par
+        symbol_info = get_symbol_info(symbol)
+
+        # Extraer stepSize
+        step_size_str = next(filter(lambda x: x['filterType'] == 'LOT_SIZE', symbol_info['filters']))['stepSize']
+        step_size = float(step_size_str)
+
+        # Calcular la cantidad de decimales permitidos
+        precision = int(round(-math.log(step_size, 10), 0))
+        final_qty = round(qty, precision)
+
+        print(f"✅ Cantidad calculada para {symbol}: {final_qty} (stepSize: {step_size})")
+        return final_qty
+
     except Exception as e:
-        print("Error obteniendo precio:", e)
+        print(f"❌ Error obteniendo cantidad para {symbol}: {e}")
         return 0.0
 
 def close_position(symbol):
     """Cierra cualquier posición abierta"""
     try:
         position_info = client.futures_position_information(symbol=symbol)
+
+        if not position_info or len(position_info) == 0:
+            print(f"ℹ️ No hay posición abierta para {symbol}")
+            return
+
         qty = float(position_info[0]['positionAmt'])
         if qty != 0:
             side = "SELL" if qty > 0 else "BUY"
@@ -87,9 +115,9 @@ def close_position(symbol):
                 type="MARKET",
                 quantity=abs(qty)
             )
-            print(f"Posición cerrada en {symbol}")
+            print(f"✅ Posición cerrada en {symbol}")
     except Exception as e:
-        print(f"Error cerrando posición en {symbol}:", e)
+        print(f"⚠️ Error cerrando posición en {symbol}: {str(e)}")
 
 # === SERVIDOR FLASK ===
 app = Flask(__name__)
@@ -103,7 +131,7 @@ def webhook():
     data = request.json
     print("Se recibió señal:", data)
 
-    symbol = data.get("symbol", "").upper().replace(".P", "")
+    symbol = data.get("symbol", "").upper()
     signal = data.get("signal", "").upper()
 
     if symbol not in PARES_PERMITIDOS:

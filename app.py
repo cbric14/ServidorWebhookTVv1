@@ -1,30 +1,19 @@
 from flask import Flask, request, jsonify
 from binance import Client
 import os
-import time
 import logging
 from datetime import datetime
-from tenacity import retry, stop_after_attempt, wait_fixed
+import time
 
-# Configuración del logging
+# === CONFIGURACIÓN DEL LOGGING ===
 logging.basicConfig(
     filename='webhook_server.log',
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
-# Inicializar Flask
-app = Flask(__name__)
-
-# === CONFIGURACIÓN DEL BOT ===
-PARES_PERMITIDOS = ["FETUSDT", "GRTUSDT", "AIUSDT", "SONICUSDT", "DOTUSDT", "BAKEUSDT"]
-LEVERAGE = 20
-POSITION_PERCENT = 0.05  # 5% del balance disponible
-MODE_ONEWAY = True
-
-# === FUNCIONES AUXILIARES ===
 def log_signal(data, status, error=None):
-    """Guarda en logs cada señal recibida y su estado"""
+    """Guarda cada señal recibida y su estado"""
     symbol = data.get("symbol", "unknown").upper()
     signal = data.get("signal", "unknown").upper()
 
@@ -33,44 +22,36 @@ def log_signal(data, status, error=None):
         msg += f" | Error: {error}"
 
     logging.info(msg)
-    print(msg)  # Mostrar también en consola
+    print(msg)
 
-# === INICIALIZAR CLIENTE DE BINANCE ===
+# === INICIALIZACIÓN DEL CLIENTE BINANCE ===
 api_key = os.getenv("BINANCE_API_KEY")
 api_secret = os.getenv("BINANCE_API_SECRET")
 
 if not api_key or not api_secret:
-    raise ValueError("BINANCE_API_KEY y BINANCE_API_SECRET son requeridos")
-
-
-from binance.helpers import dateparser
-from binance import Client
-
-# Inicializar cliente de Binance
-api_key = os.getenv("BINANCE_API_KEY")
-api_secret = os.getenv("BINANCE_API_SECRET")
+    raise ValueError("Faltan claves API de Binance")
 
 client = Client(api_key, api_secret)
 
-# Ajustar tiempo manualmente
+# === AJUSTE AUTOMÁTICO DEL TIEMPO ===
 try:
     res = client.get_server_time()
     server_time = res['serverTime']
-    local_time = int(time.time() * 1000)  # Tiempo actual en ms
+    local_time = int(time.time() * 1000)
     client.time_offset = server_time - local_time
-    print(f"✅ Ajustado offset de tiempo: {client.time_offset} ms")
+    print(f"✅ Offset de tiempo ajustado: {client.time_offset} ms")
 except Exception as e:
-    print(f"❌ Error al ajustar tiempo: {e}")
+    print(f"⚠️ No se pudo ajustar el tiempo automáticamente: {e}")
 
-# Prueba básica de conexión
-try:
-    client.futures_account_balance()
-    print("✅ Conexión a Binance Futures OK")
-except Exception as e:
-    print("❌ Error conectando a Binance:", e)
+# === CONFIGURACIÓN DEL BOT ===
+PARES_PERMITIDOS = ["FETUSDT", "GRTUSDT", "AIUSDT", "SONICUSDT", "DOTUSDT", "BAKEUSDT"]
+LEVERAGE = 20
+POSITION_PERCENT = 0.05  # 5% del balance disponible
+MODE_ONEWAY = True
 
-# === FUNCIONES COMPLEMENTARIAS ===
+# === FUNCIONES AUXILIARES ===
 def get_balance_usdt():
+    """Obtiene el balance disponible en USDT"""
     try:
         balances = client.futures_account_balance()
         for b in balances:
@@ -82,21 +63,22 @@ def get_balance_usdt():
         return 0.0
 
 def get_quantity(symbol):
-    balance = get_balance_usdt()
-    investment = balance * POSITION_PERCENT
+    """Calcula cantidad en base al 5% del balance"""
+    investment = get_balance_usdt() * POSITION_PERCENT
     try:
         ticker = client.futures_symbol_ticker(symbol=symbol)
         price = float(ticker['price'])
-        qty = round(investment / price, 8)
+        qty = round(investment / price, 8)  # Ajuste a 8 decimales
         return qty
     except Exception as e:
         print("Error obteniendo precio:", e)
         return 0.0
 
 def close_position(symbol):
+    """Cierra cualquier posición abierta"""
     try:
-        position = client.futures_position_information(symbol=symbol)
-        qty = float(position[0]['positionAmt'])
+        position_info = client.futures_position_information(symbol=symbol)
+        qty = float(position_info[0]['positionAmt'])
         if qty != 0:
             side = "SELL" if qty > 0 else "BUY"
             client.futures_create_order(
@@ -109,29 +91,17 @@ def close_position(symbol):
     except Exception as e:
         print(f"Error cerrando posición en {symbol}:", e)
 
-# === MANEJO SEGURO DE ÓRDENES ===
-executed_signals = set()
+# === SERVIDOR FLASK ===
+app = Flask(__name__)
 
-@retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
-def safe_futures_create_order(**kwargs):
-    return client.futures_create_order(**kwargs)
-
-# === RUTAS FLASK ===
 @app.route('/')
 def home():
-    return jsonify({"status": "alive"})
+    return jsonify({"status": "alive"}), 200
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
     data = request.json
     print("Se recibió señal:", data)
-
-    signal_id = data.get('signalId')
-    if signal_id in executed_signals:
-        log_signal(data, "Duplicado", "Señal ya procesada")
-        return jsonify({"status": "duplicate"}), 200
-
-    executed_signals.add(signal_id)
 
     symbol = data.get("symbol", "").upper().replace(".P", "")
     signal = data.get("signal", "").upper()
@@ -157,7 +127,7 @@ def webhook():
                 log_signal(data, "Cantidad inválida")
                 return jsonify({"status": "error", "message": "Cantidad inválida"}), 400
 
-            order = safe_futures_create_order(
+            order = client.futures_create_order(
                 symbol=symbol,
                 side="BUY",
                 type="MARKET",
@@ -171,7 +141,7 @@ def webhook():
                 log_signal(data, "Cantidad inválida")
                 return jsonify({"status": "error", "message": "Cantidad inválida"}), 400
 
-            order = safe_futures_create_order(
+            order = client.futures_create_order(
                 symbol=symbol,
                 side="SELL",
                 type="MARKET",
@@ -195,16 +165,16 @@ def webhook():
 
 @app.route('/stats', methods=['GET'])
 def stats():
+    """Muestra estadísticas básicas de uso"""
     try:
         with open('webhook_server.log', 'r') as f:
             logs = f.readlines()
         return jsonify({
             "total_signals": len(logs),
-            "last_10_logs": logs[-10:]
+            "last_10_logs": [log.strip() for log in logs[-10:]]
         }), 200
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
-# === INICIO DEL SERVIDOR ===
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)

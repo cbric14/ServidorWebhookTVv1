@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 from binance import Client
 import os
 import logging
+from datetime import datetime
 import time
 
 # Configuración del logging

@@ -175,9 +175,9 @@ def webhook():
     data = request.json
     print("Se recibió señal:", data)
 
-    symbol = data.get("symbol", "").upper().replace(".P", "")
+    symbol = data.get("symbol", "").upper().replace("BINANCE:", "").replace(".P", "")
     action = data.get("action", "").upper()
-    entry_price = float(data.get("entryValue", 0))
+    entry_price = float(data.get("entry", 0))
     take_profit_price = float(data.get("tp", 0))
     stop_loss_price = float(data.get("sl", 0))
 except ValueError as ve:

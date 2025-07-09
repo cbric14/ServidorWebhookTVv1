@@ -288,12 +288,15 @@ try:
             break
 
         time.sleep(10)  # Polling cada 10 segundos
-
-    return jsonify({"status": "ok"}), 200
-
 except Exception as e:
     log_signal(data, "Error al ejecutar orden", error=str(e))
     return jsonify({"status": "error", "message": str(e)}), 500
+
+
+return jsonify({"status": "ok"}), 200
+
+
+
 @app.route('/stats', methods=['GET'])
 def stats():
     """Muestra estadísticas básicas de uso"""

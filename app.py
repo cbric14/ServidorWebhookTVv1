@@ -229,6 +229,8 @@ def webhook():
                 if (action == "BUY" and current_price >= partial_tp_price) or \
                    (action == "SELL" and current_price <= partial_tp_price):
                     print(f"🟡 TP parcial alcanzado ({partial_tp_price}), cerrando {half_qty} unidades...")
+                    # Se registra en el log la toma parcial de ganancias 
+                    log_signal(data, f"TP parcial alcanzado en {partial_tp_price}, cerrando {half_qty} unidades")
                     client.futures_create_order(
                         symbol=symbol,
                         side="SELL" if action == "BUY" else "BUY",
@@ -280,7 +282,7 @@ def stats():
             logs = f.readlines()
         return jsonify({
             "total_signals": len(logs),
-            "last_10_logs": [log.strip() for log in logs[-10:]]
+            "last_50_logs": [log.strip() for log in logs[-50:]]
         }), 200
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500

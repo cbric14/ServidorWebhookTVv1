@@ -197,7 +197,7 @@ def webhook():
         log_signal(data, "Acción desconocida")
         return jsonify({"status": "error", "message": "Acción desconocida"}), 400
 
-    if take_profit_price <= 0 or stop_loss_price <= 0:
+    if take_profit_price <= 0 or stop_loss_price <= 0 and (action = BUY or SELL):
         log_signal(data, "Precios inválidos", error="TP o SL vacíos")
         return jsonify({"status": "error", "message": "Take Profit o Stop Loss inválido"}), 400
 

@@ -294,7 +294,6 @@ try:
 except Exception as e:
     log_signal(data, "Error al ejecutar orden", error=str(e))
     return jsonify({"status": "error", "message": str(e)}), 500
-
 @app.route('/stats', methods=['GET'])
 def stats():
     """Muestra estadísticas básicas de uso"""

@@ -248,46 +248,45 @@ def webhook():
         print(f"🛡️ SL objetivo: {stop_loss_price}")
 
         # Iniciar polling del precio
-        while True:
-            current_ticker = client.futures_symbol_ticker(symbol=symbol)
-            current_price = float(current_ticker['price'])
+while True:
+    current_ticker = client.futures_symbol_ticker(symbol=symbol)
+    current_price = float(current_ticker['price'])
 
-            # Si llega al 70% del TP, cierra el 50%
-            if (action == "BUY" and current_price >= partial_tp_price) or \
-               (action == "SELL" and current_price <= partial_tp_price):
+    # Si llega al 70% del TP, cierra el 50%
+    if (action == "BUY" and current_price >= partial_tp_price) or \
+       (action == "SELL" and current_price <= partial_tp_price):
+        print(f"🟡 TP parcial alcanzado ({partial_tp_price}), cerrando {half_qty} unidades...")
+        client.futures_create_order(
+            symbol=symbol,
+            side="SELL" if action == "BUY" else "BUY",
+            type="MARKET",
+            quantity=half_qty,
+            reduceOnly=True
+        )
+        remaining_qty = qty - half_qty
+        print(f"✅ Se cerró el 50% de la posición. Restan {remaining_qty} unidades.")
+        
+        # Mover Stop Loss al precio de entrada (break-even)
+        trailing_sl = entry_price
+        print(f"🛡️ Moviendo Stop Loss al precio de entrada: {trailing_sl}")
+        client.futures_create_order(
+            symbol=symbol,
+            side="SELL" if action == "BUY" else "BUY",
+            type="STOP_MARKET",
+            quantity=remaining_qty,
+            stopPrice=trailing_sl,
+            reduceOnly=True
+        )
+        break  # Salir del bucle después de ejecutar el TP parcial
 
-                print(f"🟡 TP parcial alcanzado ({partial_tp_price}), cerrando {half_qty} unidades...")
-                client.futures_create_order(
-                    symbol=symbol,
-                    side="SELL" if action == "BUY" else "BUY",
-                    type="MARKET",
-                    quantity=half_qty,
-                    reduceOnly=True
-                )
-                remaining_qty = qty - half_qty
-                print(f"✅ Se cerró el 50% de la posición. Restan {remaining_qty} unidades.")
+    # Verificar si la posición fue cerrada externamente
+    position_info = client.futures_position_information(symbol=symbol)
+    current_pos = float(position_info[0]['positionAmt']) if position_info else 0.0
+    if current_pos == 0:
+        print("ℹ️ Posición completamente cerrada.")
+        break
 
-                # Mover Stop Loss al precio de entrada (break-even)
-                trailing_sl = entry_price
-                print(f"🛡️ Moviendo Stop Loss al precio de entrada: {trailing_sl}")
-                client.futures_create_order(
-                    symbol=symbol,
-                    side="SELL" if action == "BUY" else "BUY",
-                    type="STOP_MARKET",
-                    quantity=remaining_qty,
-                    stopPrice=trailing_sl,
-                    reduceOnly=True
-                )
-
-                break  # Salir del bucle después de ejecutar el TP parcial
-
-            # Si se cierra toda la posición antes de llegar al TP → salir
-            current_pos = close_position(symbol)
-            if current_pos == 0:
-                print("ℹ️ Posición completamente cerrada.")
-                break
-
-            time.sleep(10)  # Polling cada 10 segundos
+    time.sleep(10)  # Polling cada 10 segundos
 
         return jsonify({"status": "ok"}), 200
 

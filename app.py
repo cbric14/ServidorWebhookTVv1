@@ -44,12 +44,10 @@ except Exception as e:
     print(f"⚠️ No se pudo ajustar el tiempo: {e}")
 
 # === CONFIGURACIÓN DEL BOT ===
-# Lista de pares permitidos (sin .P)
 PARES_PERMITIDOS = ["FETUSDT", "GRTUSDT", "AIUSDT", "SONICUSDT", "DOTUSDT", "BAKEUSDT"]
 LEVERAGE = 20
-POSITION_PERCENT = 0.5  # 50% del balance disponible
+POSITION_PERCENT = 0.05  # 5% del balance disponible
 MODE_ONEWAY = True
-STOP_LOSS_PERCENT = 1.0  # 1% de Stop Loss
 
 # === FUNCIONES AUXILIARES ===
 def get_balance_usdt():
@@ -65,29 +63,25 @@ def get_balance_usdt():
         return 0.0
 
 def get_step_size_precision(symbol):
-    """Obtiene la precisión permitida por el par"""
-    try:
-        info = client.futures_exchange_info()
-        symbol_data = next((item for item in info['symbols'] if item['symbol'] == symbol), None)
-        if not symbol_data:
-            raise ValueError(f"{symbol} no encontrado en Binance Futures")
+    """Obtiene la cantidad de decimales permitidos por el par"""
+    info = client.futures_exchange_info()
+    symbol_data = next((item for item in info['symbols'] if item['symbol'] == symbol), None)
+    
+    if not symbol_data:
+        raise ValueError(f"{symbol} no encontrado en Binance Futures")
 
-        step_size_str = None
-        for f in symbol_data['filters']:
-            if 'stepSize' in f:
-                step_size_str = f['stepSize']
-                break
+    step_size_str = None
+    for f in symbol_data['filters']:
+        if 'stepSize' in f:
+            step_size_str = f['stepSize']
+            break
 
-        if not step_size_str:
-            raise ValueError(f"No se encontró stepSize para {symbol}")
+    if not step_size_str:
+        raise ValueError(f"No se encontró stepSize para {symbol}")
 
-        step_size = float(step_size_str)
-        precision = int(round(-math.log(step_size, 10), 0))
-        return precision
-
-    except Exception as e:
-        print("⚠️ Error obteniendo stepSize:", e)
-        return 8  # Fallback a 8 decimales si hay error
+    step_size = float(step_size_str)
+    precision = int(round(-math.log(step_size, 10), 0))
+    return precision, step_size
 
 def get_quantity(symbol):
     investment = get_balance_usdt() * POSITION_PERCENT
@@ -96,63 +90,75 @@ def get_quantity(symbol):
         price = float(ticker['price'])
         qty = investment / price
 
-        precision = get_step_size_precision(symbol)
+        precision, _ = get_step_size_precision(symbol)
         final_qty = round(qty, precision)
 
         print(f"✅ Cantidad calculada para {symbol}: {final_qty}")
         return final_qty
 
     except Exception as e:
-        print(f"❌ Error obteniendo cantidad para {symbol}: {e}")
+        print(f"❌ Error obteniendo cantidad para {symbol}: {str(e)}")
         return 0.0
-
-def create_stop_loss_order(symbol, side, qty, entry_price):
-    """Crea una orden STOP_MARKET del 1%"""
-    try:
-        if side == "BUY":
-            stop_price = round(entry_price * (1 - STOP_LOSS_PERCENT / 100), 8)
-            order_side = "SELL"
-        elif side == "SELL":
-            stop_price = round(entry_price * (1 + STOP_LOSS_PERCENT / 100), 8)
-            order_side = "BUY"
-        else:
-            raise ValueError("Side debe ser BUY o SELL")
-
-        sl_order = client.futures_create_order(
-            symbol=symbol,
-            side=order_side,
-            type="STOP_MARKET",
-            quantity=abs(qty),
-            stopPrice=stop_price,
-            reduceOnly=True
-        )
-        print(f"📉 Stop Loss creado en {stop_price} para {symbol}")
-        return sl_order
-    except Exception as e:
-        print(f"⚠️ Error creando Stop Loss para {symbol}: {str(e)}")
-        return None
 
 def close_position(symbol):
     """Cierra cualquier posición abierta"""
     try:
         position_info = client.futures_position_information(symbol=symbol)
-
+        
         if not position_info or len(position_info) == 0:
             print(f"ℹ️ No hay posición abierta para {symbol}")
-            return
+            return 0.0
 
         qty = float(position_info[0]['positionAmt'])
         if qty != 0:
-            order_side = "SELL" if qty > 0 else "BUY"
+            side = "SELL" if qty > 0 else "BUY"
             client.futures_create_order(
                 symbol=symbol,
-                side=order_side,
+                side=side,
                 type="MARKET",
                 quantity=abs(qty)
             )
             print(f"✅ Posición cerrada en {symbol}")
+            return abs(qty)
+        else:
+            return 0.0
     except Exception as e:
         print(f"⚠️ Error cerrando posición en {symbol}: {str(e)}")
+        return 0.0
+
+def create_stop_loss_order(symbol, entry_price, sl_price):
+    """Crea una orden STOP_MARKET para el Stop Loss"""
+    try:
+        sl_order = client.futures_create_order(
+            symbol=symbol,
+            side="SELL" if "BUY" else "BUY",
+            type="STOP_MARKET",
+            quantity=abs(get_quantity(symbol)),
+            stopPrice=sl_price,
+            reduceOnly=True
+        )
+        print(f"🛑 Stop Loss creado en {sl_price} para {symbol}")
+        return sl_order
+    except Exception as e:
+        print(f"⚠️ Error creando Stop Loss para {symbol}: {str(e)}")
+        return None
+
+def create_take_profit_order(symbol, tp_price, qty):
+    """Crea una orden LIMIT para Take Profit"""
+    try:
+        order = client.futures_create_order(
+            symbol=symbol,
+            side="SELL" if qty > 0 else "BUY",
+            type="LIMIT",
+            quantity=qty,
+            price=tp_price,
+            timeInForce="GTC"
+        )
+        print(f"📈 Take Profit creado en {tp_price} para {symbol}")
+        return order
+    except Exception as e:
+        print(f"⚠️ Error creando Take Profit en {symbol}: {str(e)}")
+        return None
 
 # === SERVIDOR FLASK ===
 app = Flask(__name__)
@@ -167,15 +173,22 @@ def webhook():
     print("Se recibió señal:", data)
 
     symbol = data.get("symbol", "").upper().replace(".P", "")
-    signal = data.get("signal", "").upper()
+    action = data.get("action", "").upper()
+    entry_price = float(data.get("entry", 0))
+    take_profit_price = float(data.get("tp", 0))
+    stop_loss_price = float(data.get("sl", 0))
 
     if symbol not in PARES_PERMITIDOS:
         log_signal(data, "Rechazado (par no permitido)")
         return jsonify({"status": "error", "message": "Par no permitido"}), 400
 
-    if signal not in ["BUY", "SELL", "EXIT BUY", "EXIT SELL"]:
+    if action not in ["BUY", "SELL"]:
         log_signal(data, "Señal desconocida")
-        return jsonify({"status": "error", "message": "Señal desconocida"}), 400
+        return jsonify({"status": "error", "message": "Acción desconocida"}), 400
+
+    if take_profit_price <= 0 or stop_loss_price <= 0:
+        log_signal(data, "Precios inválidos", error="TP o SL vacíos")
+        return jsonify({"status": "error", "message": "Take Profit o Stop Loss inválido"}), 400
 
     try:
         # Establecer leverage
@@ -184,59 +197,75 @@ def webhook():
         if MODE_ONEWAY:
             close_position(symbol)
 
-        if signal == "BUY":
-            qty = get_quantity(symbol)
-            if qty <= 0:
-                log_signal(data, "Cantidad inválida")
-                return jsonify({"status": "error", "message": "Cantidad inválida"}), 400
+        qty = get_quantity(symbol)
+        if qty <= 0:
+            log_signal(data, "Cantidad inválida")
+            return jsonify({"status": "error", "message": "Cantidad inválida"}), 400
 
-            # Crear orden principal
+        # Abrir posición inicial
+        if action == "BUY":
             order = client.futures_create_order(
                 symbol=symbol,
                 side="BUY",
                 type="MARKET",
                 quantity=qty
             )
-
-            # Obtener precio actual para calcular SL
-            ticker = client.futures_symbol_ticker(symbol=symbol)
-            entry_price = float(ticker['price'])
-
-            # Crear Stop Loss
-            sl_order = create_stop_loss_order(symbol, "BUY", qty, entry_price)
-
             log_signal(data, "Orden BUY enviada")
 
-        elif signal == "SELL":
-            qty = get_quantity(symbol)
-            if qty <= 0:
-                log_signal(data, "Cantidad inválida")
-                return jsonify({"status": "error", "message": "Cantidad inválida"}), 400
-
-            # Crear orden principal
+        elif action == "SELL":
             order = client.futures_create_order(
                 symbol=symbol,
                 side="SELL",
                 type="MARKET",
                 quantity=qty
             )
-
-            # Obtener precio actual para calcular SL
-            ticker = client.futures_symbol_ticker(symbol=symbol)
-            entry_price = float(ticker['price'])
-
-            # Crear Stop Loss
-            sl_order = create_stop_loss_order(symbol, "SELL", qty, entry_price)
-
             log_signal(data, "Orden SELL enviada")
 
-        elif signal == "EXIT BUY":
-            close_position(symbol)
-            log_signal(data, "Cerrada posición larga")
+        # Calcular el 70% del TP
+        partial_tp_price = entry_price + (take_profit_price - entry_price) * 0.7 if action == "BUY" else entry_price - (entry_price - take_profit_price) * 0.7
+        half_qty = round(qty / 2, 8)
 
-        elif signal == "EXIT SELL":
-            close_position(symbol)
-            log_signal(data, "Cerrada posición corta")
+        # Iniciar polling del precio para detectar TP parcial
+        while True:
+            current_ticker = client.futures_symbol_ticker(symbol=symbol)
+            current_price = float(current_ticker['price'])
+
+            # Si llega al 70% del TP, cierra el 50% de la posición
+            if (action == "BUY" and current_price >= partial_tp_price) or \
+               (action == "SELL" and current_price <= partial_tp_price):
+
+                print(f"🟡 TP parcial alcanzado ({partial_tp_price}), cerrando {half_qty} unidades...")
+                close_order = client.futures_create_order(
+                    symbol=symbol,
+                    side="SELL" if action == "BUY" else "BUY",
+                    type="MARKET",
+                    quantity=half_qty,
+                    reduceOnly=True
+                )
+                remaining_qty = qty - half_qty
+                print(f"✅ Se cerró el 50% de la posición. Restan {remaining_qty} unidades.")
+
+                # Mover Stop Loss al precio de entrada (break-even)
+                trailing_sl = entry_price
+                print(f"🛡️ Moviendo Stop Loss al precio de entrada: {trailing_sl}")
+                client.futures_create_order(
+                    symbol=symbol,
+                    side="SELL" if action == "BUY" else "BUY",
+                    type="STOP_MARKET",
+                    quantity=remaining_qty,
+                    stopPrice=trailing_sl,
+                    reduceOnly=True
+                )
+
+                break  # Salir del bucle después de ejecutar el TP parcial
+
+            # Si se cierra toda la posición antes de llegar al TP → salir
+            current_pos = close_position(symbol)
+            if current_pos == 0:
+                print("ℹ️ Posición completamente cerrada.")
+                break
+
+            time.sleep(10)  # Polling cada 10 segundos
 
         return jsonify({"status": "ok"}), 200
 

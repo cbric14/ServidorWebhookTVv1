@@ -180,7 +180,7 @@ def webhook():
     entry_price = float(data.get("entry", 0))
     take_profit_price = float(data.get("tp", 0))
     stop_loss_price = float(data.get("sl", 0))
-except ValueError as ve:
+    except ValueError as ve:
     log_signal(data, "Precios inválidos", error="TP o SL no son números")
     return jsonify({"status": "error", "message": "Take Profit o Stop Loss no son válidos"}), 400
 

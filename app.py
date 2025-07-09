@@ -182,7 +182,7 @@ def webhook():
         log_signal(data, "Rechazado (par no permitido)")
         return jsonify({"status": "error", "message": "Par no permitido"}), 400
 
-    if action not in ["BUY", "SELL"]:
+    if action not in ["BUY", "SELL", "EXIT BUY", "EXIT SELL"]:
         log_signal(data, "Señal desconocida")
         return jsonify({"status": "error", "message": "Acción desconocida"}), 400
 

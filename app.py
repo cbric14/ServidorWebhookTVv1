@@ -175,14 +175,19 @@ def webhook():
     data = request.json
     print("Se recibió señal:", data)
 
-    symbol = data.get("symbol", "").upper().replace("BINANCE:", "").replace(".P", "")
-    action = data.get("action", "").upper()
-    entry_price = float(data.get("entry", 0))
-    take_profit_price = float(data.get("tp", 0))
-    stop_loss_price = float(data.get("sl", 0))
+    try:
+        # Limpiar y procesar símbolo
+        symbol = data.get("symbol", "").upper().replace("BINANCE:", "").replace(".P", "")
+        action = data.get("action", "").upper()
+
+        # Convertir valores numéricos
+        entry_price = float(data.get("entry", 0))
+        take_profit_price = float(data.get("tp", 0))
+        stop_loss_price = float(data.get("sl", 0))
+
     except ValueError as ve:
-    log_signal(data, "Precios inválidos", error="TP o SL no son números")
-    return jsonify({"status": "error", "message": "Take Profit o Stop Loss no son válidos"}), 400
+        log_signal(data, "Precios inválidos", error="TP, SL o ENTRY no son números")
+        return jsonify({"status": "error", "message": "Valores inválidos en la señal"}), 400
 
     if symbol not in PARES_PERMITIDOS:
         log_signal(data, "Rechazado (par no permitido)")
@@ -195,6 +200,7 @@ def webhook():
     if take_profit_price <= 0 or stop_loss_price <= 0:
         log_signal(data, "Precios inválidos", error="TP o SL vacíos")
         return jsonify({"status": "error", "message": "Take Profit o Stop Loss inválido"}), 400
+
 
     try:
         # Establecer leverage

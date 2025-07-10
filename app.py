@@ -4,6 +4,7 @@ import os
 import logging
 import time
 import math
+import threading
 
 # === CONFIGURACIÓN GLOBAL ===
 closed_trades = []
@@ -93,6 +94,7 @@ def get_step_size_precision(symbol):
             raise ValueError(f"No se encontró stepSize para {symbol}")
         step_size = float(step_size_str)
         precision = int(round(-math.log(step_size, 10), 0))
+        precision = max(0, precision)  # Evitar precisiones negativas
         return precision, step_size
     except Exception as e:
         print(f"⚠️ Error obteniendo precisión para {symbol}: {str(e)}")
@@ -106,6 +108,10 @@ def get_quantity(symbol):
         precision, _ = get_step_size_precision(symbol)
         qty = investment / price
         final_qty = round(qty, precision)
+
+        if final_qty <= 0:
+            raise ValueError(f"Cantidad calculada es cero o negativa: {final_qty}")
+
         print(f"✅ Cantidad calculada para {symbol}: {final_qty}")
         return final_qty, precision
     except Exception as e:
@@ -154,6 +160,11 @@ def create_stop_loss_order(symbol, sl_price, precision):
         if qty <= 0:
             print(f"⚠️ Cantidad inválida para crear SL: {qty}")
             return None
+        
+        # Validar precio
+        if sl_price <= 0:
+            raise ValueError(f"Precio de Stop Loss inválido: {sl_price}")
+        
         order_side = "SELL" if qty > 0 else "BUY"
         sl_order = client.futures_create_order(
             symbol=symbol,
@@ -181,6 +192,15 @@ def create_take_profit_order(symbol, tp_price, precision, data=None):
             print(f"⚠️ Cantidad inválida para TP: {half_qty}")
             log_signal(data, "Cantidad inválida", error=f"Cerrar parcial con qty={half_qty}")
             return None
+        
+        # Validar precio
+        if tp_price <= 0:
+            raise ValueError(f"Precio de Take Profit inválido: {tp_price}")
+        
+        rounded_tp_price = round(tp_price, precision)
+        if rounded_tp_price <= 0:
+            raise ValueError(f"Precio de TP redondeado inválido: {rounded_tp_price}")
+
         order = client.futures_create_order(
             symbol=symbol,
             side="SELL" if half_qty > 0 else "BUY",
@@ -204,7 +224,10 @@ def home():
 def webhook():
     data = request.json
     print("Se recibió señal:", data)
+    threading.Thread(target=process_signal, args=(data,)).start()
+    return jsonify({"status": "Processing started"}), 202
 
+def process_signal(data):
     try:
         symbol = data.get("symbol", "").upper().replace("BINANCE:", "").replace(".P", "")
         action = data.get("action", "").upper()
@@ -245,7 +268,12 @@ def webhook():
 
                 if MODE_ONEWAY:
                     close_position(symbol)
-
+                    time.sleep(1)  # Breve pausa
+                    current_pos = get_open_position(symbol)
+                    if current_pos > 0:
+                        log_signal(data, f"⚠️ No se pudo cerrar la posición previa: {current_pos}")
+                        return jsonify({"status": "error", "message": f"No se cerró la posición previa en {symbol}"}), 409          
+                
                 qty, precision = get_quantity(symbol)
                 if qty <= 0:
                     log_signal(data, "Cantidad inválida")
@@ -279,94 +307,106 @@ def webhook():
 
                 partial_tp_executed = False
 
-                while True:
-                    current_ticker = client.futures_symbol_ticker(symbol=symbol)
-                    current_price = float(current_ticker['price'])
+                # Límite de tiempo: 30 minutos
+                timeout = 30 * 60  # segundos
+                start_time = time.time()
 
-                    if not partial_tp_executed:
-                        if ((action == "BUY" and current_price >= partial_tp_price) or
-                            (action == "SELL" and current_price <= partial_tp_price)):
-                            print(f"🟡 TP parcial alcanzado ({partial_tp_price}), cerrando {half_qty} unidades...")
+                while time.time() - start_time < timeout:
+                    try:
+                        current_ticker = client.futures_symbol_ticker(symbol=symbol)
+                        current_price = float(current_ticker['price'])
+
+                        if not partial_tp_executed:
+                            if ((action == "BUY" and current_price >= partial_tp_price) or
+                                (action == "SELL" and current_price <= partial_tp_price)):
+                                print(f"🟡 TP parcial alcanzado ({partial_tp_price}), cerrando {half_qty} unidades...")
+                                client.futures_create_order(
+                                    symbol=symbol,
+                                    side="SELL" if action == "BUY" else "BUY",
+                                    type="MARKET",
+                                    quantity=half_qty,
+                                    reduceOnly=True
+                                )
+                                remaining_qty = qty - half_qty
+                                pnl = calculate_pnl(entry_price, current_price, half_qty, action == "BUY")
+                                closed_trades.append({
+                                    "symbol": symbol,
+                                    "action": action,
+                                    "entry": entry_price,
+                                    "exit": current_price,
+                                    "qty": half_qty,
+                                    "pnl": pnl,
+                                    "timestamp": time.time()
+                                })
+                                log_signal(data, f"TP parcial alcanzado en {current_price}, PnL: {pnl} USDT")
+                                trailing_sl = entry_price
+                                client.futures_create_order(
+                                    symbol=symbol,
+                                    side="SELL" if action == "BUY" else "BUY",
+                                    type="STOP_MARKET",
+                                    quantity=remaining_qty,
+                                    stopPrice=trailing_sl,
+                                    reduceOnly=True
+                                )
+                                partial_tp_executed = True
+
+                        if ((action == "BUY" and current_price >= take_profit_price) or
+                            (action == "SELL" and current_price <= take_profit_price)):
+                            print("🎯 TP total alcanzado. Cerrando posición restante...")
+                            remaining_qty = qty - half_qty
                             client.futures_create_order(
                                 symbol=symbol,
                                 side="SELL" if action == "BUY" else "BUY",
                                 type="MARKET",
-                                quantity=half_qty,
-                                reduceOnly=True
-                            )
-                            remaining_qty = qty - half_qty
-                            pnl = calculate_pnl(entry_price, current_price, half_qty, action == "BUY")
-                            closed_trades.append({
-                                "symbol": symbol,
-                                "action": action,
-                                "entry": entry_price,
-                                "exit": current_price,
-                                "qty": half_qty,
-                                "pnl": pnl,
-                                "timestamp": time.time()
-                            })
-                            log_signal(data, f"TP parcial alcanzado en {current_price}, PnL: {pnl} USDT")
-                            trailing_sl = entry_price
-                            client.futures_create_order(
-                                symbol=symbol,
-                                side="SELL" if action == "BUY" else "BUY",
-                                type="STOP_MARKET",
                                 quantity=remaining_qty,
-                                stopPrice=trailing_sl,
                                 reduceOnly=True
                             )
-                            partial_tp_executed = True
-
-                    if ((action == "BUY" and current_price >= take_profit_price) or
-                        (action == "SELL" and current_price <= take_profit_price)):
-                        print("🎯 TP total alcanzado. Cerrando posición restante...")
-                        remaining_qty = qty - half_qty
-                        client.futures_create_order(
-                            symbol=symbol,
-                            side="SELL" if action == "BUY" else "BUY",
-                            type="MARKET",
-                            quantity=remaining_qty,
-                            reduceOnly=True
-                        )
-                        pnl_total = calculate_pnl(entry_price, current_price, remaining_qty, action == "BUY")
-                        closed_trades.append({
-                            "symbol": symbol,
-                            "action": action,
-                            "entry": entry_price,
-                            "exit": current_price,
-                            "qty": remaining_qty,
-                            "pnl": pnl_total,
-                            "timestamp": time.time(),
-                            "reason": "TP total alcanzado"
-                        })
-                        log_signal(data, f"TP total alcanzado en {current_price}, PnL: {pnl_total} USDT")
-                        break
-
-                    try:
-                        position_info = client.futures_position_information(symbol=symbol)
-                        current_pos = float(position_info[0]['positionAmt']) if position_info else 0.0
-                    except Exception:
-                        current_pos = 0.0
-
-                    if current_pos == 0:
-                        print("ℹ️ Posición completamente cerrada (SL o cierre externo).")
-                        remaining_qty = qty - half_qty
-                        if remaining_qty > 0:
-                            pnl_final = calculate_pnl(entry_price, current_price, remaining_qty, action == "BUY")
+                            pnl_total = calculate_pnl(entry_price, current_price, remaining_qty, action == "BUY")
                             closed_trades.append({
                                 "symbol": symbol,
                                 "action": action,
                                 "entry": entry_price,
                                 "exit": current_price,
                                 "qty": remaining_qty,
-                                "pnl": pnl_final,
+                                "pnl": pnl_total,
                                 "timestamp": time.time(),
-                                "reason": "Posición cerrada totalmente (SL o cierre externo)"
+                                "reason": "TP total alcanzado"
                             })
-                            log_signal(data, f"Posición cerrada totalmente, PnL: {pnl_final} USDT")
-                        break
+                            log_signal(data, f"TP total alcanzado en {current_price}, PnL: {pnl_total} USDT")
+                            break
 
+                        try:
+                            position_info = client.futures_position_information(symbol=symbol)
+                            current_pos = float(position_info[0]['positionAmt']) if position_info else 0.0
+                        except Exception:
+                            current_pos = 0.0
+
+                        if current_pos == 0:
+                            print("ℹ️ Posición completamente cerrada (SL o cierre externo).")
+                            remaining_qty = qty - half_qty
+                            if remaining_qty > 0:
+                                pnl_final = calculate_pnl(entry_price, current_price, remaining_qty, action == "BUY")
+                                closed_trades.append({
+                                    "symbol": symbol,
+                                    "action": action,
+                                    "entry": entry_price,
+                                    "exit": current_price,
+                                    "qty": remaining_qty,
+                                    "pnl": pnl_final,
+                                    "timestamp": time.time(),
+                                    "reason": "Posición cerrada totalmente (SL o cierre externo)"
+                                })
+                                log_signal(data, f"Posición cerrada totalmente, PnL: {pnl_final} USDT")
+                            break
+
+                        
+                    except Exception as e:
+                        print(f"⚠️ Error en monitoreo de TP/SL: {e}")
+                        break
                     time.sleep(10)
+                else:
+                    print("⏰ Tiempo de espera agotado. Verifica manualmente la posición.")
+                    log_signal(data, "Tiempo de espera agotado para TP/SL")
 
             except Exception as e:
                 log_signal(data, "Error al ejecutar orden", error=str(e))

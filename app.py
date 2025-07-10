@@ -147,11 +147,19 @@ def create_stop_loss_order(symbol, sl_price, precision):
         print(f"⚠️ Error creando Stop Loss para {symbol}: {str(e)}")
         return None
 
-def create_take_profit_order(symbol, tp_price, precision):
+def create_take_profit_order(symbol, tp_price, precision, data=None):
     """Crea una orden LIMIT para Take Profit"""
     try:
         half_qty = round(close_position(symbol) / 2, precision)
-
+        
+        if half_qty <= 0:
+            print(f"⚠️ Cantidad inválida para crear TP: {half_qty}")
+            if data:
+                log_signal(data, "Cantidad inválida para TP", error=f"TP con qty={half_qty}")
+               
+            time.sleep(10)
+            return None  # ✅ Salir si no hay cantidad válida
+        
         order = client.futures_create_order(
             symbol=symbol,
             side="SELL" if half_qty > 0 else "BUY",
@@ -162,10 +170,10 @@ def create_take_profit_order(symbol, tp_price, precision):
         )
         print(f"📈 Take Profit creado en {tp_price} para {symbol}")
         return order
+    
     except Exception as e:
         print(f"⚠️ Error creando Take Profit en {symbol}: {str(e)}")
         return None
-
 def calculate_pnl(entry_price, exit_price, qty, is_long):
     """
     Calcula la ganancia/pérdida neta (PnL) en USDT
@@ -177,14 +185,6 @@ def calculate_pnl(entry_price, exit_price, qty, is_long):
     else:
         pnl = (entry_price - exit_price) * qty
     return round(pnl, 2)
-
-
-
-
-
-
-
-
 
 
 # === SERVIDOR FLASK ===
@@ -230,6 +230,12 @@ def webhook():
             client.futures_create_order(symbol=symbol, side="SELL", type="MARKET", quantity=qty)
             log_signal(data, "Orden SELL enviada")
 
+        # Crear Stop Loss
+        if stop_loss_price <= 0:
+            log_signal(data, "Stop Loss inválido", error="Stop Loss vacío o negativo")
+        else:
+            create_stop_loss_order(symbol, stop_loss_price, precision)
+
         # Calcular TP parcial
         if action == "BUY":
             partial_tp_price = entry_price + (take_profit_price - entry_price) * 0.7
@@ -243,11 +249,23 @@ def webhook():
         print(f"🟡 TP parcial: {partial_tp_price}")
         print(f"🛡️ SL objetivo: {stop_loss_price}")
 
+        # 👇 Crear orden LIMIT para Take Profit objetivo
+        create_take_profit_order(symbol, take_profit_price, precision, data=data)
+
         # Iniciar polling del precio
         try:
             while True:
-                current_ticker = client.futures_symbol_ticker(symbol=symbol)
-                current_price = float(current_ticker['price'])
+                try:                    
+                    current_ticker = client.futures_symbol_ticker(symbol=symbol)
+                    if not current_ticker or 'price' not in current_ticker:
+                        print(f"⚠️ Datos inválidos recibidos para {symbol}")
+                        time.sleep(10)
+                        continue
+                    current_price = float(current_ticker['price'])
+                except Exception as e:
+                    print(f"❌ Error obteniendo precio para {symbol}: {str(e)}")
+                    time.sleep(10)
+                    continue
 
                 # Si llega al 70% del TP, cierra el 50%
                 if (action == "BUY" and current_price >= partial_tp_price) or \

@@ -251,6 +251,13 @@ def webhook():
                     log_signal(data, "Cantidad inválida")
                     return jsonify({"status": "error", "message": "Cantidad inválida"}), 400
 
+                # Verificar si ya hay posición abierta
+                current_pos = get_open_position(symbol)
+                if current_pos > 0:
+                    log_signal(data, f"⚠️ Ya hay posición abierta en {symbol}, cancelando nueva entrada")
+                    return jsonify({"status": "error", "message": f"Ya hay posición abierta en {symbol}"}), 409
+                
+                # Abrir posición inicial
                 if action == "BUY":
                     client.futures_create_order(symbol=symbol, side="BUY", type="MARKET", quantity=qty)
                     log_signal(data, "Orden BUY enviada")

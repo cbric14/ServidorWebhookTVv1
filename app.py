@@ -274,6 +274,18 @@ def webhook():
                         is_long = action == "BUY"
                         pnl = calculate_pnl(entry_price, current_price, half_qty, is_long)
                         print(f"💰 Ganancia/Pérdida: {pnl} USDT")
+
+                        # Guardar en memoria para /stats
+                        closed_trades.append({
+                            "symbol": symbol,
+                            "action": action,
+                            "entry": entry_price,
+                            "exit": current_price,
+                            "qty": half_qty,
+                            "pnl": pnl,
+                            "timestamp": time.time()
+                        })
+
                         log_signal(data, f"TP parcial alcanzado en {current_price}, PnL: {pnl} USDT")
 
                         # Mover Stop Loss al precio de entrada (break-even)
@@ -295,8 +307,17 @@ def webhook():
                         continue
 
                 # Verificar si la posición fue cerrada externamente
-                position_info = client.futures_position_information(symbol=symbol)
-                current_pos = float(position_info[0]['positionAmt']) if position_info else 0.0
+                try:
+                    position_info = client.futures_position_information(symbol=symbol)
+                    if not position_info or len(position_info) == 0:
+                        print(f"⚠️ No hay información disponible para {symbol}")
+                        current_pos = 0.0
+                    else:
+                        current_pos = float(position_info[0]['positionAmt'])
+                except Exception as e:
+                    print(f"❌ Error obteniendo posición para {symbol}: {str(e)}")
+                    current_pos = 0.0
+
                 if current_pos == 0:
                     print("ℹ️ Posición completamente cerrada.")
                     break
@@ -328,7 +349,11 @@ def stats():
         
         return jsonify({
             "total_signals": len(logs),
-            "last_50_logs": [log.strip() for log in logs[-50:]]
+            "total_positions_closed": len(closed_trades),
+            "total_pnl": round(total_pnl, 2),
+            "win_rate": win_rate,
+            "last_10_logs": [log.strip() for log in logs[-10:]],
+            "last_5_trades": closed_trades[-5:]
         }), 200
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500

@@ -104,12 +104,12 @@ def get_quantity(symbol):
         return 0.0, 0
 
 def close_position(symbol):
-    """Cierra cualquier posición abierta"""
+    """Cierra cualquier posicion abierta"""
     try:
         position_info = client.futures_position_information(symbol=symbol)
 
         if not position_info or len(position_info) == 0:
-            print(f"ℹ️ No hay posición abierta para {symbol}")
+            print(f"ℹ️ No hay posicion abierta para {symbol}")
             return 0.0
 
         qty = float(position_info[0]['positionAmt'])
@@ -122,12 +122,12 @@ def close_position(symbol):
                 quantity=abs(qty),
                 reduceOnly=True
             )
-            print(f"✅ Posición cerrada en {symbol}")
+            print(f"✅ posicion cerrada en {symbol}")
             return abs(qty)
         else:
             return 0.0
     except Exception as e:
-        print(f"⚠️ Error cerrando posición en {symbol}: {str(e)}")
+        print(f"⚠️ Error cerrando posicion en {symbol}: {str(e)}")
         return 0.0
 
 def create_stop_loss_order(symbol, sl_price, precision):
@@ -222,7 +222,7 @@ def webhook():
             log_signal(data, "Cantidad inválida")
             return jsonify({"status": "error", "message": "Cantidad inválida"}), 400
 
-        # Abrir posición inicial
+        # Abrir posicion inicial
         if action == "BUY":
             client.futures_create_order(symbol=symbol, side="BUY", type="MARKET", quantity=qty)
             log_signal(data, "Orden BUY enviada")
@@ -268,7 +268,7 @@ def webhook():
                     print(f"📈 PnL de la operación: {pnl} USDT")
 
                     remaining_qty = qty - half_qty
-                    print(f"✅ Se cerró el 50% de la posición. Restan {remaining_qty} unidades.")
+                    print(f"✅ Se cerró el 50% de la posicion. Restan {remaining_qty} unidades.")
                     print(f"💰 Ganancia/Pérdida: {pnl} USDT")
 
                     # Registrar operación cerrada
@@ -301,14 +301,14 @@ def webhook():
                 position_info = client.futures_position_information(symbol=symbol)
                 current_pos = float(position_info[0]['positionAmt']) if position_info else 0.0
                 if current_pos == 0:
-                    print("ℹ️ Posición completamente cerrada.")
+                    print("ℹ️ Posicion completamente cerrada.")
 
                     # Registrar PnL final
                     exit_price = current_price
                     is_long = action == "BUY"
                     pnl = calculate_pnl(entry_price, exit_price, qty, is_long)
                     print(f"💰 Ganancia/Pérdida total: {pnl} USDT")
-                    log_signal(data, f"Posición cerrada. PnL total: {pnl} USDT")
+                    log_signal(data, f"Posicion cerrada. PnL total: {pnl} USDT")
                     break
 
                 time.sleep(10)  # Polling cada 10 segundos

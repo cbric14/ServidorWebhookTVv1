@@ -5,6 +5,9 @@ import logging
 import time
 import math
 
+# Al inicio del script
+closed_trades = []
+
 # Configuración del logging
 logging.basicConfig(
     filename='webhook_server.log',
@@ -163,6 +166,27 @@ def create_take_profit_order(symbol, tp_price, precision):
         print(f"⚠️ Error creando Take Profit en {symbol}: {str(e)}")
         return None
 
+def calculate_pnl(entry_price, exit_price, qty, is_long):
+    """
+    Calcula la ganancia/pérdida neta (PnL) en USDT
+    """
+    if qty <= 0:
+        return 0.0
+    if is_long:
+        pnl = (exit_price - entry_price) * qty
+    else:
+        pnl = (entry_price - exit_price) * qty
+    return round(pnl, 2)
+
+
+
+
+
+
+
+
+
+
 # === SERVIDOR FLASK ===
 app = Flask(__name__)
 
@@ -238,9 +262,28 @@ def webhook():
                         quantity=half_qty,
                         reduceOnly=True
                     )
+
+                    # Calcular PnL de la operación
+                    pnl = calculate_pnl(entry_price, current_price, half_qty, action == "BUY")
+                    print(f"📈 PnL de la operación: {pnl} USDT")
+
                     remaining_qty = qty - half_qty
                     print(f"✅ Se cerró el 50% de la posición. Restan {remaining_qty} unidades.")
-                    
+                    print(f"💰 Ganancia/Pérdida: {pnl} USDT")
+
+                    # Registrar operación cerrada
+                    closed_trades.append({
+                        "symbol": symbol,
+                        "action": action,
+                        "entry_price": entry_price,
+                        "exit_price": current_price,
+                        "quantity": half_qty,
+                        "pnl": pnl
+                    })  
+
+                    # Registrar en log
+                    log_signal(data, f"TP parcial alcanzado en {current_price}, PnL: {pnl} USDT")
+
                     # Mover Stop Loss al precio de entrada (break-even)
                     trailing_sl = entry_price
                     print(f"🛡️ Moviendo Stop Loss al precio de entrada: {trailing_sl}")
@@ -259,6 +302,13 @@ def webhook():
                 current_pos = float(position_info[0]['positionAmt']) if position_info else 0.0
                 if current_pos == 0:
                     print("ℹ️ Posición completamente cerrada.")
+
+                    # Registrar PnL final
+                    exit_price = current_price
+                    is_long = action == "BUY"
+                    pnl = calculate_pnl(entry_price, exit_price, qty, is_long)
+                    print(f"💰 Ganancia/Pérdida total: {pnl} USDT")
+                    log_signal(data, f"Posición cerrada. PnL total: {pnl} USDT")
                     break
 
                 time.sleep(10)  # Polling cada 10 segundos
@@ -280,6 +330,13 @@ def stats():
     try:
         with open('webhook_server.log', 'r') as f:
             logs = f.readlines()
+        
+        # Filtrar solo señales con PnL
+        total_pnl = sum(t["pnl"] for t in closed_trades)
+        wins = sum(1 for t in closed_trades if t["pnl"] > 0)
+        losses = sum(1 for t in closed_trades if t["pnl"] < 0)
+        win_rate = wins / (wins + losses) * 100 if (wins + losses) > 0 else 0
+        
         return jsonify({
             "total_signals": len(logs),
             "last_50_logs": [log.strip() for log in logs[-50:]]

@@ -210,20 +210,8 @@ def webhook():
         stop_loss_price = None
 
         # Validaciones operaciones
-        if action in ["BUY", "SELL"]:
-            try:
-                entry_price = float(data.get("entry", 0.0)) 
-                take_profit_price = float(data.get("tp", 0.0))
-                stop_loss_price = float(data.get("sl", 0.0))
 
-                if take_profit_price <= 0 or stop_loss_price <= 0:
-                    log_signal(data, "Precios inválidos", error="TP o SL vacíos")
-                    return jsonify({"status": "error", "message": "Take Profit o Stop Loss inválido"}), 400
-            except ValueError as ve:
-                log_signal(data, "Precios inválidos", error="TP, SL o ENTRY no son números")
-                return jsonify({"status": "error", "message": "Valores inválidos en la señal"}), 400
-            
-        elif action in ["EXIT BUY", "EXIT SELL"]:
+        if action in ["EXIT BUY", "EXIT SELL"]:
             print(f"🛑 Cerrando posición manualmente: {symbol}")
             closed_qty = close_position(symbol)
 
@@ -233,83 +221,134 @@ def webhook():
             else:
                 log_signal(data, "No había posición abierta")
                 return jsonify({"status": "ok", "message": "No había posición abierta"}), 200
-
-        if stop_loss_price > 0:
-            create_stop_loss_order(symbol, stop_loss_price, precision)
-        else:
-            print("🛡️ Stop Loss no definido o inválido")
-
-        # Calcular TP parcial
-        partial_tp_price = 0.0
-        if action == "BUY":
-            partial_tp_price = entry_price + (take_profit_price - entry_price) * 0.7
-        elif action == "SELL":
-            partial_tp_price = entry_price - (entry_price - take_profit_price) * 0.7
-
-        half_qty = round(qty / 2, precision)
-        print(f"🎯 TP objetivo: {take_profit_price}")
-        print(f"🟡 TP parcial: {partial_tp_price}")
-        print(f"🛡️ SL objetivo: {stop_loss_price}")
-
-        # 👇 Crear orden LIMIT para Take Profit objetivo
-        create_take_profit_order(symbol, take_profit_price, precision, data=data)
-
-        # Iniciar polling del precio
-        while True:
-            current_ticker = client.futures_symbol_ticker(symbol=symbol)
-            current_price = float(current_ticker['price'])
-
-            if (action == "BUY" and current_price >= partial_tp_price) or \
-               (action == "SELL" and current_price <= partial_tp_price):
-                print(f"🟡 TP parcial alcanzado ({partial_tp_price}), cerrando {half_qty} unidades...")
-
-                if half_qty <= 0:
-                    print(f"⚠️ Cantidad inválida para cerrar parcialmente: {half_qty}")
-                    log_signal(data, "Cantidad inválida", error=f"Cerrar parcial con qty={half_qty}")
-                    time.sleep(10)
-                    continue
-
-                client.futures_create_order(
-                    symbol=symbol,
-                    side="SELL" if action == "BUY" else "BUY",
-                    type="MARKET",
-                    quantity=half_qty,
-                    reduceOnly=True
-                )
-                remaining_qty = qty - half_qty
-                print(f"✅ Se cerró el 50% de la posición. Restan {remaining_qty} unidades.")
-
-                # Mover Stop Loss al precio de entrada (break-even)
-                trailing_sl = entry_price
-                print(f"🛡️ Moviendo Stop Loss al precio de entrada: {trailing_sl}")
-                client.futures_create_order(
-                    symbol=symbol,
-                    side="SELL" if action == "BUY" else "BUY",
-                    type="STOP_MARKET",
-                    quantity=remaining_qty,
-                    stopPrice=trailing_sl,
-                    reduceOnly=True
-                )
-
-                break  # Salir del bucle después de ejecutar el TP parcial
-
-            # Verificar si la posición fue cerrada externamente
+            
+        elif action in ["BUY", "SELL"]:
             try:
-                position_info = client.futures_position_information(symbol=symbol)
-                if not position_info or len(position_info) == 0:
-                    print(f"⚠️ No hay información disponible para {symbol}")
-                    current_pos = 0.0
+                entry_price = float(data.get("entry", 0.0)) 
+                take_profit_price = float(data.get("tp", 0.0))
+                stop_loss_price = float(data.get("sl", 0.0))
+
+                if take_profit_price <= 0 or stop_loss_price <= 0:
+                    log_signal(data, "Precios inválidos", error="TP o SL vacíos")
+                    return jsonify({"status": "error", "message": "Take Profit o Stop Loss inválido"}), 400
+                
+                # Establecer leverage
+                client.futures_change_leverage(symbol=symbol, leverage=LEVERAGE)
+
+                if MODE_ONEWAY:
+                    close_position(symbol)
+
+                #  Obtener cantidad y precisión aquí
+                qty, precision = get_quantity(symbol)
+                if qty <= 0:
+                    log_signal(data, "Cantidad inválida")
+                    return jsonify({"status": "error", "message": "Cantidad inválida"}), 400
+
+                #  Abrir posición inicial
+                if action == "BUY":
+                    client.futures_create_order(
+                        symbol=symbol,
+                        side="BUY",
+                        type="MARKET",
+                        quantity=qty
+                    )
+                    log_signal(data, "Orden BUY enviada")
+                elif action == "SELL":
+                    client.futures_create_order(
+                        symbol=symbol,
+                        side="SELL",
+                        type="MARKET",
+                        quantity=qty
+                    )
+                    log_signal(data, "Orden SELL enviada")
+
+        
+                #Calcular Stop Loss
+                if stop_loss_price > 0:
+                    create_stop_loss_order(symbol, stop_loss_price, precision)
                 else:
-                    current_pos = float(position_info[0]['positionAmt'])
-            except Exception as e:
-                print(f"❌ Error obteniendo posición para {symbol}: {str(e)}")
-                current_pos = 0.0
+                    print("🛡️ Stop Loss no definido o inválido")
 
-            if current_pos == 0:
-                print("ℹ️ Posición completamente cerrada.")
-                break
+                # Calcular TP parcial
+                partial_tp_price = 0.0
+                if action == "BUY":
+                    partial_tp_price = entry_price + (take_profit_price - entry_price) * 0.7
+                elif action == "SELL":
+                    partial_tp_price = entry_price - (entry_price - take_profit_price) * 0.7
+                
+                
+                half_qty = round(qty / 2, precision)
+                print(f"🎯 TP objetivo: {take_profit_price}")
+                print(f"🟡 TP parcial: {partial_tp_price}")
+                print(f"🛡️ SL objetivo: {stop_loss_price}")
 
-            time.sleep(10)  # Polling cada 10 segundos
+                # 👇 Crear orden LIMIT para Take Profit objetivo
+                create_take_profit_order(symbol, take_profit_price, precision, data=data)
+
+                # Iniciar polling del precio
+                while True:
+                    current_ticker = client.futures_symbol_ticker(symbol=symbol)
+                    current_price = float(current_ticker['price'])
+
+                    if (action == "BUY" and current_price >= partial_tp_price) or \
+                    (action == "SELL" and current_price <= partial_tp_price):
+                        print(f"🟡 TP parcial alcanzado ({partial_tp_price}), cerrando {half_qty} unidades...")
+
+                        if half_qty <= 0:
+                            print(f"⚠️ Cantidad inválida para cerrar parcialmente: {half_qty}")
+                            log_signal(data, "Cantidad inválida", error=f"Cerrar parcial con qty={half_qty}")
+                            time.sleep(10)
+                            continue
+
+                        client.futures_create_order(
+                            symbol=symbol,
+                            side="SELL" if action == "BUY" else "BUY",
+                            type="MARKET",
+                            quantity=half_qty,
+                            reduceOnly=True
+                        )
+                        remaining_qty = qty - half_qty
+                        print(f"✅ Se cerró el 50% de la posición. Restan {remaining_qty} unidades.")
+
+                        # Mover Stop Loss al precio de entrada (break-even)
+                        trailing_sl = entry_price
+                        print(f"🛡️ Moviendo Stop Loss al precio de entrada: {trailing_sl}")
+                        client.futures_create_order(
+                            symbol=symbol,
+                            side="SELL" if action == "BUY" else "BUY",
+                            type="STOP_MARKET",
+                            quantity=remaining_qty,
+                            stopPrice=trailing_sl,
+                            reduceOnly=True
+                        )
+
+                        break  # Salir del bucle después de ejecutar el TP parcial
+
+                    # Verificar si la posición fue cerrada externamente
+                    try:
+                        position_info = client.futures_position_information(symbol=symbol)
+                        if not position_info or len(position_info) == 0:
+                            print(f"⚠️ No hay información disponible para {symbol}")
+                            current_pos = 0.0
+                        else:
+                            current_pos = float(position_info[0]['positionAmt'])
+                    except Exception as e:
+                        print(f"❌ Error obteniendo posición para {symbol}: {str(e)}")
+                        current_pos = 0.0
+
+                    if current_pos == 0:
+                        print("ℹ️ Posición completamente cerrada.")
+                        break
+
+                    time.sleep(10)  # Polling cada 10 segundos
+
+            except ValueError as ve:
+                log_signal(data, "Precios inválidos", error="TP, SL o ENTRY no son números")
+                return jsonify({"status": "error", "message": "Valores inválidos en la señal"}), 400
+
+        else:
+            log_signal(data, "Acción desconocida")
+            return jsonify({"status": "error", "message": "Acción desconocida"}), 400   
 
         return jsonify({"status": "ok"}), 200
 

@@ -222,7 +222,7 @@ def webhook():
             log_signal(data, "Cantidad inválida")
             return jsonify({"status": "error", "message": "Cantidad inválida"}), 400
 
-        # Abrir posicion inicial
+        # Abrir posición inicial
         if action == "BUY":
             client.futures_create_order(symbol=symbol, side="BUY", type="MARKET", quantity=qty)
             log_signal(data, "Orden BUY enviada")
@@ -243,7 +243,7 @@ def webhook():
         print(f"🟡 TP parcial: {partial_tp_price}")
         print(f"🛡️ SL objetivo: {stop_loss_price}")
 
-        # Iniciar polling del precio (dentro del try principal)
+        # Iniciar polling del precio
         try:
             while True:
                 current_ticker = client.futures_symbol_ticker(symbol=symbol)
@@ -253,62 +253,52 @@ def webhook():
                 if (action == "BUY" and current_price >= partial_tp_price) or \
                    (action == "SELL" and current_price <= partial_tp_price):
                     print(f"🟡 TP parcial alcanzado ({partial_tp_price}), cerrando {half_qty} unidades...")
-                    # Se registra en el log la toma parcial de ganancias 
-                    log_signal(data, f"TP parcial alcanzado en {partial_tp_price}, cerrando {half_qty} unidades")
-                    client.futures_create_order(
-                        symbol=symbol,
-                        side="SELL" if action == "BUY" else "BUY",
-                        type="MARKET",
-                        quantity=half_qty,
-                        reduceOnly=True
-                    )
 
-                    # Calcular PnL de la operación
-                    pnl = calculate_pnl(entry_price, current_price, half_qty, action == "BUY")
-                    print(f"📈 PnL de la operación: {pnl} USDT")
+                    try:
+                        if half_qty <= 0:
+                            print(f"⚠️ Cantidad inválida para cerrar parcialmente: {half_qty}")
+                            log_signal(data, "Cantidad inválida", error=f"Cerrar parcial con qty={half_qty}")
+                            return jsonify({"status": "error", "message": "Cantidad inválida"}), 400
 
-                    remaining_qty = qty - half_qty
-                    print(f"✅ Se cerró el 50% de la posicion. Restan {remaining_qty} unidades.")
-                    print(f"💰 Ganancia/Pérdida: {pnl} USDT")
+                        client.futures_create_order(
+                            symbol=symbol,
+                            side="SELL" if action == "BUY" else "BUY",
+                            type="MARKET",
+                            quantity=half_qty,
+                            reduceOnly=True
+                        )
+                        remaining_qty = qty - half_qty
+                        print(f"✅ Se cerró el 50% de la posición. Restan {remaining_qty} unidades.")
 
-                    # Registrar operación cerrada
-                    closed_trades.append({
-                        "symbol": symbol,
-                        "action": action,
-                        "entry_price": entry_price,
-                        "exit_price": current_price,
-                        "quantity": half_qty,
-                        "pnl": pnl
-                    })  
+                        # Calcular PnL
+                        is_long = action == "BUY"
+                        pnl = calculate_pnl(entry_price, current_price, half_qty, is_long)
+                        print(f"💰 Ganancia/Pérdida: {pnl} USDT")
+                        log_signal(data, f"TP parcial alcanzado en {current_price}, PnL: {pnl} USDT")
 
-                    # Registrar en log
-                    log_signal(data, f"TP parcial alcanzado en {current_price}, PnL: {pnl} USDT")
+                        # Mover Stop Loss al precio de entrada (break-even)
+                        trailing_sl = entry_price
+                        print(f"🛡️ Moviendo Stop Loss al precio de entrada: {trailing_sl}")
+                        client.futures_create_order(
+                            symbol=symbol,
+                            side="SELL" if action == "BUY" else "BUY",
+                            type="STOP_MARKET",
+                            quantity=remaining_qty,
+                            stopPrice=trailing_sl,
+                            reduceOnly=True
+                        )
+                        break  # Salir del bucle después de ejecutar el TP parcial
 
-                    # Mover Stop Loss al precio de entrada (break-even)
-                    trailing_sl = entry_price
-                    print(f"🛡️ Moviendo Stop Loss al precio de entrada: {trailing_sl}")
-                    client.futures_create_order(
-                        symbol=symbol,
-                        side="SELL" if action == "BUY" else "BUY",
-                        type="STOP_MARKET",
-                        quantity=remaining_qty,
-                        stopPrice=trailing_sl,
-                        reduceOnly=True
-                    )
-                    break  # Salir del bucle después de ejecutar el TP parcial
+                    except Exception as e:
+                        print(f"❌ Error al cerrar TP parcial: {str(e)}")
+                        log_signal(data, "Error al cerrar TP parcial", error=str(e))
+                        continue
 
                 # Verificar si la posición fue cerrada externamente
                 position_info = client.futures_position_information(symbol=symbol)
                 current_pos = float(position_info[0]['positionAmt']) if position_info else 0.0
                 if current_pos == 0:
-                    print("ℹ️ Posicion completamente cerrada.")
-
-                    # Registrar PnL final
-                    exit_price = current_price
-                    is_long = action == "BUY"
-                    pnl = calculate_pnl(entry_price, exit_price, qty, is_long)
-                    print(f"💰 Ganancia/Pérdida total: {pnl} USDT")
-                    log_signal(data, f"Posicion cerrada. PnL total: {pnl} USDT")
+                    print("ℹ️ Posición completamente cerrada.")
                     break
 
                 time.sleep(10)  # Polling cada 10 segundos
@@ -322,7 +312,6 @@ def webhook():
     except Exception as e:
         log_signal(data, "Error crítico", error=str(e))
         return jsonify({"status": "error", "message": str(e)}), 500
-
 
 @app.route('/stats', methods=['GET'])
 def stats():

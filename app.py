@@ -249,7 +249,7 @@ def create_take_profit_order(symbol, tp_price, precision, data=None):
 # === RUTAS FLASK ===
 @app.route('/')
 def home():
-    return jsonify {"status": "ok", "message": "Servidor activo"}, 200  
+    return jsonify({"status": "ok", "message": "Servidor activo"}), 200
 
 @app.route('/webhook', methods=['POST'])
 def webhook():

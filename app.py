@@ -36,6 +36,20 @@ def log_signal(data, status, error=None):
     logging.info(msg)
     print(msg)
 
+def cancel_open_orders(symbol):
+    """Cancela todas las órdenes abiertas para un símbolo"""
+    try:
+        client.futures_cancel_all_open_orders(symbol=symbol)
+        print(f"✅ Órdenes abiertas canceladas para {symbol}")
+        return True
+    except Exception as e:
+        print(f"⚠️ Error cancelando órdenes para {symbol}: {str(e)}")
+        return False
+
+
+
+
+
 # === AJUSTE DE TIEMPO CON BINANCE ===
 try:
     res = client.get_server_time()
@@ -179,6 +193,23 @@ def create_stop_loss_order(symbol, sl_price, precision):
     except Exception as e:
         print(f"⚠️ Error creando Stop Loss para {symbol}: {str(e)}")
         return None
+def create_trailing_stop_order(symbol, qty, callback_rate=0.5):
+    """Crea una orden TRAILING_STOP_MARKET para el Stop Loss"""
+    try:
+        order_side = "SELL" if qty > 0 else "BUY"
+        tsl_order = client.futures_create_order(
+            symbol=symbol,
+            side=order_side,
+            type="TRAILING_STOP_MARKET",
+            quantity=qty,
+            reduceOnly=True,
+            callbackRate=0.6  # Ejemplo: 0.6%
+        )
+        print(f"🔁 Trailing Stop creado para {symbol} con callback rate {callback_rate}%")
+        return tsl_order
+    except Exception as e:
+        print(f"⚠️ Error creando Trailing Stop para {symbol}: {str(e)}")
+        return None
 
 def create_take_profit_order(symbol, tp_price, precision, data=None):
     """Crea una orden LIMIT para Take Profit"""
@@ -233,6 +264,7 @@ def process_signal(data):
         action = data.get("action", "").upper()
 
         if action in ["EXIT BUY", "EXIT SELL"]:
+            cancel_open_orders(symbol)  # Cancelamos órdenes antes de cerrar
             closed_qty = close_position(symbol)
             if closed_qty > 0:
                 current_price = float(client.futures_symbol_ticker(symbol=symbol)['price'])
@@ -293,8 +325,8 @@ def process_signal(data):
                     client.futures_create_order(symbol=symbol, side="SELL", type="MARKET", quantity=qty)
                     log_signal(data, "Orden SELL enviada")
 
-                rounded_sl = round(stop_loss_price, precision)
-                create_stop_loss_order(symbol, rounded_sl, precision)
+                
+                create_trailing_stop_order(symbol, round(qty, precision),callback_rate=0.6)
 
                 partial_tp_price = entry_price + abs(take_profit_price - entry_price) * 0.7 if action == "BUY" else entry_price - abs(entry_price - take_profit_price) * 0.7
                 half_qty = round(qty / 2, precision)
@@ -327,6 +359,7 @@ def process_signal(data):
                                     quantity=half_qty,
                                     reduceOnly=True
                                 )
+                                cancel_open_orders(symbol)  # Cancelamos órdenes luego de cerrar la posición parcial
                                 remaining_qty = qty - half_qty
                                 pnl = calculate_pnl(entry_price, current_price, half_qty, action == "BUY")
                                 closed_trades.append({
@@ -338,6 +371,7 @@ def process_signal(data):
                                     "pnl": pnl,
                                     "timestamp": time.time()
                                 })
+                                
                                 log_signal(data, f"TP parcial alcanzado en {current_price}, PnL: {pnl} USDT")
                                 trailing_sl = entry_price
                                 client.futures_create_order(
@@ -361,6 +395,7 @@ def process_signal(data):
                                 quantity=remaining_qty,
                                 reduceOnly=True
                             )
+                            cancel_open_orders(symbol)  # Cancelamos órdenes luego de cerrar la posición total
                             pnl_total = calculate_pnl(entry_price, current_price, remaining_qty, action == "BUY")
                             closed_trades.append({
                                 "symbol": symbol,

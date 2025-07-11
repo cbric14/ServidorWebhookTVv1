@@ -218,14 +218,14 @@ def create_take_profit_order(symbol, tp_price, precision, data=None):
 # === RUTAS FLASK ===
 @app.route('/')
 def home():
-    return jsonify({"status": "alive"}), 200
+    return
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
     data = request.json
     print("Se recibió señal:", data)
     threading.Thread(target=process_signal, args=(data,)).start()
-    return jsonify({"status": "Processing started"}), 202
+    return
 
 def process_signal(data):
     try:
@@ -249,10 +249,10 @@ def process_signal(data):
                     "reason": "Salida manual"
                 })
                 log_signal(data, f"Posición cerrada manualmente, PnL: {pnl} USDT")
-                return jsonify({"status": "ok", "message": "Posición cerrada"}), 200
+                return 
             else:
                 log_signal(data, "No había posición abierta")
-                return jsonify({"status": "ok", "message": "No había posición abierta"}), 200
+                return 
 
         elif action in ["BUY", "SELL"]:
             try:
@@ -262,7 +262,7 @@ def process_signal(data):
 
                 if entry_price <= 0 or take_profit_price <= 0 or stop_loss_price <= 0:
                     log_signal(data, "Precios inválidos", error="Uno o más precios menores o iguales a 0")
-                    return jsonify({"status": "error", "message": "Precios deben ser mayores a 0"}), 400
+                    return 
 
                 client.futures_change_leverage(symbol=symbol, leverage=LEVERAGE)
 
@@ -272,18 +272,18 @@ def process_signal(data):
                     current_pos = get_open_position(symbol)
                     if current_pos > 0:
                         log_signal(data, f"⚠️ No se pudo cerrar la posición previa: {current_pos}")
-                        return jsonify({"status": "error", "message": f"No se cerró la posición previa en {symbol}"}), 409          
+                        return          
                 
                 qty, precision = get_quantity(symbol)
                 if qty <= 0:
                     log_signal(data, "Cantidad inválida")
-                    return jsonify({"status": "error", "message": "Cantidad inválida"}), 400
+                    return 
 
                 # Verificar si ya hay posición abierta
                 current_pos = get_open_position(symbol)
                 if current_pos > 0:
                     log_signal(data, f"⚠️ Ya hay posición abierta en {symbol}, cancelando nueva entrada")
-                    return jsonify({"status": "error", "message": f"Ya hay posición abierta en {symbol}"}), 409
+                    return 
                 
                 # Abrir posición inicial
                 if action == "BUY":
@@ -410,17 +410,17 @@ def process_signal(data):
 
             except Exception as e:
                 log_signal(data, "Error al ejecutar orden", error=str(e))
-                return jsonify({"status": "error", "message": str(e)}), 500
+                return 
 
         else:
             log_signal(data, "Acción desconocida")
-            return jsonify({"status": "error", "message": "Acción desconocida"}), 400
+            return 
 
-        return jsonify({"status": "ok"}), 200
+        return 
 
     except Exception as e:
         log_signal(data, "Error crítico", error=str(e))
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return 
 
 
 @app.route('/stats', methods=['GET'])

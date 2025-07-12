@@ -407,7 +407,7 @@ def process_signal(data):
                 create_stop_loss_order(symbol, stop_loss_price, precision)
                 
                 # Calcular precios de TP
-                partial_tp_price = entry_price + abs(take_profit_price - entry_price) * 0.7 if action == "BUY" else entry_price - abs(entry_price - take_profit_price) * 0.7
+                partial_tp_price = entry_price + abs(take_profit_price - entry_price) * 0.618 if action == "BUY" else entry_price - abs(entry_price - take_profit_price) * 0.618
                 half_qty = round(qty / 2, precision)
                 print(f"🎯 TP objetivo: {take_profit_price}")
                 print(f"🟡 TP parcial: {partial_tp_price}")

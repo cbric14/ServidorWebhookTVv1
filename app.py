@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify
-from binance.websocket.futures.websocket_client import FuturesWebsocketClient
+from binance.websocket.futures_websocket_manager import FuturesWebsocketManager
 from binance import Client
 import os
 import logging
